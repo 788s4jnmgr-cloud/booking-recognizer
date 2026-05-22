@@ -1,5 +1,5 @@
 /**
- * PDF 解析模块 - 使用 pdf-parse 提取文本
+ * PDF 解析模块 - 使用 pdf-parse 提取文本，支持扫描件 OCR
  */
 
 const fs = require('fs');
@@ -12,6 +12,33 @@ try {
 } catch (e) {
   console.warn('pdf-parse not found');
   pdfParse = null;
+}
+
+// pdfjs-dist for rendering PDF pages to images
+let pdfjsLib;
+try {
+  pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
+} catch (e) {
+  console.warn('pdfjs-dist not found');
+  pdfjsLib = null;
+}
+
+// @omsimos/pdf-raster for PDF to image conversion
+let pdfRaster;
+try {
+  pdfRaster = require('@omsimos/pdf-raster');
+} catch (e) {
+  console.warn('@omsimos/pdf-raster not found');
+  pdfRaster = null;
+}
+
+// tesseract.js OCR 引擎
+let Tesseract;
+try {
+  Tesseract = require('tesseract.js');
+} catch (e) {
+  console.warn('tesseract.js not found');
+  Tesseract = null;
 }
 
 /**
@@ -76,10 +103,64 @@ async function extractTextFromPDF(pdfPath) {
 
   if (pdfParse) {
     const data = await pdfParse(fileBuffer);
-    return data.text;
+    const text = data.text;
+
+    // 如果提取的文本为空或只有空白字符，尝试 OCR
+    if (!text || !text.trim()) {
+      if (Tesseract) {
+        console.log('PDF text layer empty, using OCR...');
+        return await extractTextByOCR(fileBuffer);
+      }
+      return text;
+    }
+
+    return text;
+  }
+
+  // 如果没有 pdf-parse但有 Tesseract，直接用 OCR
+  if (Tesseract) {
+    return await extractTextByOCR(fileBuffer);
   }
 
   throw new Error('No PDF parsing method available. Install pdf-parse: npm install pdf-parse');
+}
+
+/**
+ * 使用 Tesseract OCR 从 PDF 提取文本（扫描件）
+ * @param {Buffer} fileBuffer - PDF 文件 buffer
+ * @returns {Promise<string>} 提取的文本
+ */
+async function extractTextByOCR(fileBuffer) {
+  if (!Tesseract) {
+    throw new Error('OCR engine not available. Install tesseract.js: npm install tesseract.js');
+  }
+
+  if (!pdfRaster) {
+    throw new Error('PDF raster library not available. Install @omsimos/pdf-raster: npm install @omsimos/pdf-raster');
+  }
+
+  const { convert } = pdfRaster;
+  const images = await convert(fileBuffer);
+
+  let fullText = '';
+  const totalPages = images.length;
+
+  for (let i = 0; i < images.length; i++) {
+    try {
+      const pageNum = i + 1;
+      const imageData = images[i].data;
+
+      const result = await Tesseract.recognize(imageData, 'eng+chi_sim', {
+        logger: () => {}
+      });
+
+      fullText += `\nPage ${pageNum} of ${totalPages}\n${result.data.text}\n`;
+    } catch (e) {
+      console.warn('OCR failed for page:', i + 1, e.message);
+    }
+  }
+
+  return fullText;
 }
 
 /**

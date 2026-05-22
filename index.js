@@ -283,6 +283,9 @@ class BookingRecognizer {
    * 提取船名航次
    */
   extractVesselVoyage(text, result) {
+    // Hapag-Lloyd 格式: Vessel DATE PORT VESSEL_NAME HH:MM (船名在日期港口时间之后)
+    // 匹配 PNIT SEASPAN BREEZE 00:01 格式
+    const vesselLineMatch = text.match(/PNIT\s+([A-Z][A-Z\s]+?)\s+\d{2}:\d{2}/im);
     // Hapag-Lloyd 格式: Vessel\nMUNICH MAERSK\nDP Voyage: 682932\nVoy. No: 622W
     const vesselMatch = text.match(/(?:Vessel|VESSEL)[:\s]*\n?([A-Z][A-Z\s.]+?)(?:\s*\n|DP\s*Voyage|Voy\.?\s*No|$)/im);
     // Hapag-Lloyd 格式: Voy. No: 622W (优先匹配，忽略 DP Voyage)
@@ -292,7 +295,9 @@ class BookingRecognizer {
     // Hapag-Lloyd DP Voyage: 682932 (最后选项)
     const dpVoyageMatch = text.match(/DP\s*Voyage[:\s]*(\d{2,4}[A-Z]?)/i);
 
-    if (vesselMatch) {
+    if (vesselLineMatch) {
+      result.vessel = this.normalizeVesselName(vesselLineMatch[1].trim());
+    } else if (vesselMatch) {
       result.vessel = this.normalizeVesselName(vesselMatch[1].trim());
     }
     if (voyNoMatch) {
