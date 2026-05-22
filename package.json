@@ -1,0 +1,22 @@
+{
+  "name": "booking-recognizer",
+  "version": "1.0.0",
+  "description": "订舱识别模块 - 从海运单据中提取结构化信息",
+  "main": "index.js",
+  "scripts": {
+    "recognize": "node cli.js",
+    "test": "node index.js"
+  },
+  "keywords": [
+    "booking",
+    "bill-of-lading",
+    "shipping",
+    "ocr"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.2.1",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^1.1.4"
+  }
+}
