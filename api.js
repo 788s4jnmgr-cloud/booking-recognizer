@@ -49,7 +49,6 @@ function isValidUrl(urlString) {
       /^10\.\d+\.\d+\.\d+$/,
       /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,
       /^192\.168\.\d+\.\d+$/,
-      /^172\.(1[5-9]|2\d|3[01])\.\d+\.\d+$/,
       /\.local$/i,
       /^0\.0\.0\.0$/i,
       /^::1$/i,
@@ -345,27 +344,48 @@ app.post('/parse', authMiddleware, rateLimitMiddleware, async (req, res) => {
     if (req.body.url) {
       const validation = isValidUrl(req.body.url);
       if (!validation.valid) {
-        return res.status(400).json({ error: validation.reason });
+        return res.status(200).json({
+          success: false,
+          error: validation.reason
+        });
       }
       pdfPath = await downloadPDF(req.body.url);
     }
     // 2. 处理 base64 编码的 PDF
     else if (req.body.pdfBase64) {
+      // Base64 大小预检查（50MB PDF 的 base64 约 70MB）
+      const maxBase64Size = 70 * 1024 * 1024;
+      if (req.body.pdfBase64.length > maxBase64Size) {
+        return res.status(200).json({
+          success: false,
+          error: '请求数据过大'
+        });
+      }
+
       let buffer;
       try {
         buffer = Buffer.from(req.body.pdfBase64, 'base64');
       } catch {
-        return res.status(400).json({ error: '无效的 Base64 编码' });
+        return res.status(200).json({
+          success: false,
+          error: '无效的 Base64 编码'
+        });
       }
 
       // 验证 PDF 签名
       if (!isValidPDF(buffer)) {
-        return res.status(400).json({ error: '无效的 PDF 文件' });
+        return res.status(200).json({
+          success: false,
+          error: '无效的 PDF 文件'
+        });
       }
 
       // 验证文件大小（不超过 50MB）
       if (buffer.length > 50 * 1024 * 1024) {
-        return res.status(400).json({ error: '文件过大（最大 50MB）' });
+        return res.status(200).json({
+          success: false,
+          error: '文件过大（最大 50MB）'
+        });
       }
 
       const safeName = `${Date.now()}_${Math.random().toString(36).substring(7)}.pdf`;
@@ -373,12 +393,9 @@ app.post('/parse', authMiddleware, rateLimitMiddleware, async (req, res) => {
       fs.writeFileSync(pdfPath, buffer);
     }
     else {
-      return res.status(400).json({
-        error: '请提供 URL 或 base64 编码的 PDF',
-        usage: {
-          url: 'POST { url: "PDF_URL" }',
-          pdfBase64: 'POST { pdfBase64: "BASE64_STRING" }'
-        }
+      return res.status(200).json({
+        success: false,
+        error: '请提供 URL 或 base64 编码的 PDF'
       });
     }
 
@@ -506,6 +523,13 @@ app.post('/compare', authMiddleware, rateLimitMiddleware, async (req, res) => {
       if (!pdfPath.startsWith('/') && !pdfPath.match(/^[A-Za-z]:/)) {
         // Unix 系统上可能是 file://Users/... 应为 file:///Users/...
         pdfPath = '/' + pdfPath;
+      }
+      // 路径穿越防护
+      if (pdfPath.includes('..') || pdfPath.includes('%00')) {
+        return res.status(200).json({
+          success: false,
+          error: '无效的文件路径'
+        });
       }
       if (!fs.existsSync(pdfPath)) {
         return res.status(200).json({
