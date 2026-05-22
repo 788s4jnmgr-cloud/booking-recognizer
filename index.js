@@ -123,11 +123,22 @@ class BookingRecognizer {
     // 清除中文空格后的文本
     const cleanText = this.removeChineseSpaces(text);
 
-    // 船名航次: 船名航次:RACINE26007W (无空格连在一起)
-    const vesselVoyageMatch = cleanText.match(/船名航次[:\s]*([A-Z]+)(\d{5,7}[A-Z])/i);
-    if (vesselVoyageMatch) {
-      result.vessel = vesselVoyageMatch[1].trim();
-      result.voyage = vesselVoyageMatch[2].trim().toUpperCase();
+    // 船名航次: 船 名 航 次:ZHONG GU YIN CHUAN 25028W (无斜杠，空格分隔，Word文档)
+    if (!result.vessel) {
+      const vesselNoSlashMatch = text.match(/船\s*名\s*航\s*次[:\s]*([A-Z][A-Z\s]+?)\s+(\d{5,7}[A-Z])\b/i);
+      if (vesselNoSlashMatch) {
+        result.vessel = this.normalizeVesselName(vesselNoSlashMatch[1].trim());
+        result.voyage = vesselNoSlashMatch[2].trim().toUpperCase();
+      }
+    }
+
+    // 船名航次: 船名航次:RACINE26007W (无空格连在一起，cleanText中船名无空格)
+    if (!result.vessel) {
+      const vesselVoyageMatch = cleanText.match(/船名航次[:\s]*([A-Z]+)(\d{5,7}[A-Z])/i);
+      if (vesselVoyageMatch) {
+        result.vessel = this.normalizeVesselName(vesselVoyageMatch[1].trim());
+        result.voyage = vesselVoyageMatch[2].trim().toUpperCase();
+      }
     }
 
     // 船名航次: 船名航次:\nZHONG GU YIN CHUAN / 25028W (带空格的船名)
@@ -136,6 +147,15 @@ class BookingRecognizer {
       if (vesselVoyageSpaceMatch) {
         result.vessel = this.normalizeVesselName(vesselVoyageSpaceMatch[1].trim());
         result.voyage = vesselVoyageSpaceMatch[2].trim().toUpperCase();
+      }
+    }
+
+    // 船名航次: 船 名 航 次:ZHONG GU YIN CHUAN 25028W (无斜杠，空格分隔)
+    if (!result.vessel) {
+      const vesselNoSlashMatch = text.match(/船\s*名\s*航\s*次[:\s]*([A-Z][A-Z\s]+?)\s+(\d{5,7}[A-Z])\b/i);
+      if (vesselNoSlashMatch) {
+        result.vessel = this.normalizeVesselName(vesselNoSlashMatch[1].trim());
+        result.voyage = vesselNoSlashMatch[2].trim().toUpperCase();
       }
     }
 
@@ -200,9 +220,9 @@ class BookingRecognizer {
       }
     }
 
-    // 箱型: 1X40HC 或 VOLUME: 40HC*1
+    // 箱型: 1X40HC 或 VOLUME: 40HC*1 或 1*40HQ
     if (result.containers.length === 0) {
-      const containerMatch = cleanText.match(/(\d+)X(40HC|40GP|20GP|45GP|45HC)/i);
+      const containerMatch = cleanText.match(/(\d+)X(40HC|40HQ|40GP|20GP|45GP|45HC)/i);
       if (containerMatch) {
         const count = parseInt(containerMatch[1]);
         const sizeType = this.normalizeSizeType(containerMatch[2]);
@@ -214,12 +234,27 @@ class BookingRecognizer {
         }
       }
     }
-    // VOLUME: 40HC*1 格式 (箱型在前)
+    // VOLUME: 40HC*1 格式 (箱型在前) 或 箱量：1*40HQ
     if (result.containers.length === 0) {
-      const volumeMatch = text.match(/VOLUME[：:\s]*(40HC|40GP|20GP|45GP|45HC)\s*\*\s*(\d+)/i);
+      const volumeMatch = text.match(/VOLUME[：:\s]*(40HC|40HQ|40GP|20GP|45GP|45HC)\s*\*\s*(\d+)/i);
       if (volumeMatch) {
         const count = parseInt(volumeMatch[2]);
         const sizeType = this.normalizeSizeType(volumeMatch[1]);
+        for (let i = 0; i < count; i++) {
+          result.containers.push({
+            sizeType: sizeType,
+            containerNo: null
+          });
+        }
+      }
+    }
+
+    // 箱量：1*40HQ 格式
+    if (result.containers.length === 0) {
+      const boxCountMatch = text.match(/箱\s*量[：:\s]*(\d+)\s*\*\s*(40HQ|40HC|40GP|20GP|45GP|45HC)/i);
+      if (boxCountMatch) {
+        const count = parseInt(boxCountMatch[1]);
+        const sizeType = this.normalizeSizeType(boxCountMatch[2]);
         for (let i = 0; i < count; i++) {
           result.containers.push({
             sizeType: sizeType,
@@ -262,7 +297,8 @@ class BookingRecognizer {
       '22RF': '20RF',
       '22OT': '20OT',
       '22FR': '20FR',
-      '45GP': '40HC'
+      '45GP': '40HC',
+      '40HQ': '40HC'
     };
     return sizeMap[sizeType.toUpperCase()] || sizeType.toUpperCase();
   }
@@ -283,8 +319,8 @@ class BookingRecognizer {
     let normalized = vessel.trim();
     // A.P. MOLLER 转为 A.P.MOLLER（去掉点号后的空格）
     normalized = normalized.replace(/A\.P\.\s*MOLLER/i, 'A.P.MOLLER');
-    // 清除其他多余空格（多个空格变一个）
-    normalized = normalized.replace(/\s+/g, ' ').trim();
+    // 清除其他多余空格（多个空格变一个，包括不间断空格  ）
+    normalized = normalized.replace(/[\s ]+/g, ' ').trim();
     return normalized;
   }
 
