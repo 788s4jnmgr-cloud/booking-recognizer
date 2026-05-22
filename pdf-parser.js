@@ -49,8 +49,8 @@ function isValidPDFPath(filePath) {
     return false;
   }
 
-  // 只允许字母、数字、下划线、连字符、点、斜杠、反斜杠、空格
-  if (!/^[a-zA-Z0-9_\-./\\: ]+$/.test(filePath)) {
+  // 只允许字母、数字、下划线、连字符、点、斜杠、反斜杠、空格、中文
+  if (!/^[a-zA-Z0-9_\-./\\: 一-龥]+$/.test(filePath)) {
     return false;
   }
 
