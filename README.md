@@ -12,7 +12,7 @@
 - **模糊比对**：支持标准格式与识别结果的模糊比对，提单号/箱量/箱型精确匹配，船名/航次按相似度判定
 - **三种使用方式**：类库调用、CLI 工具、HTTP API 服务
 - **OCR 支持**：内置 tesseract.js，支持扫描件 PDF 识别（中英文）
-- **安全加固**：SSRF 防护、路径穿越防护、PDF 签名校验、API Key 认证、速率限制
+- **安全加固**：SSRF 防护、路径穿越防护、PDF 签名校验、API Key 认证、速率限制、Base64 大小限制
 
 ## 安装
 
@@ -76,14 +76,17 @@ node api.js
 node api.js 8080
 
 # 生产环境（带 API Key）
-set API_KEY=your-secret-key && node api.js
+API_KEY=your-secret-key node api.js
 ```
 
-接口：
-- `GET /health` — 健康检查
-- `POST /parse` — 解析 PDF（支持 URL 或 Base64）
-- `POST /parse-url` — 直接解析 URL
-- `POST /parse-batch` — 批量解析（最多 20 个）
+**接口列表：**
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/parse` | POST | 解析 PDF（支持 URL 或 Base64） |
+| `/parse-url` | POST | 直接解析 URL |
+| `/parse-batch` | POST | 批量解析（最多 20 个） |
+| `/compare` | POST | 模糊比对 |
 
 详见 [API.md](./API.md)。
 
@@ -98,14 +101,24 @@ set API_KEY=your-secret-key && node api.js
 示例：
 ```
 GUSTAV MAERSK-622E-HLCUTA12604FTHP4-1-20GP+https://oss.example.com/doc.pdf
-GUSTV MAER-62E-HLCUTA12604FTHP4-1-20GP+file:///path/to/doc.pdf
-GUSTV MAER-62E-HLCUTA12604FTHP4-1-20GP+JVBERi0xLjQK...  (base64)
+GUSTAV MAERSK-622E-HLCUTA12604FTHP4-1-20GP+file:///path/to/doc.pdf
 ```
+
+### 文档路径格式
+
+| 类型 | 格式 | 示例 |
+|------|------|------|
+| 远程 URL | 直接填写 URL | `https://oss.example.com/doc.pdf` |
+| 本地文件 (macOS/Linux) | `file://` + 完整路径 | `file:///Users/xxx/doc.pdf` |
+| 本地文件 (Windows) | `file://` + 路径 | `file:///C:/Users/xxx/doc.pdf` |
+
+**注意**：`file://` 后必须跟完整路径，macOS 上 `file://Users/...` 会自动补全为 `file:///Users/...`
 
 ### 比对规则
 
 1. **精确匹配字段**（必须完全一致）：提单号、箱量、箱型
 2. **模糊匹配字段**（相似度 ≥ 阈值）：船名、航次
+3. 精确匹配字段全部通过后，才进行模糊匹配
 
 ### 返回结果示例
 
@@ -113,13 +126,13 @@ GUSTV MAER-62E-HLCUTA12604FTHP4-1-20GP+JVBERi0xLjQK...  (base64)
 ```
 ========================================
 比对结果: ✅ 吻合
-相似度: 76%
+相似度: 100%
 阈值: 70%
 
 标准格式:
-  GUSTV MAER-62E-HLCUTA12604FTHP4-1-20GP
+  GUSTAV MAERSK-622E-HLCUTA12502BHSO7-2-20GP
 识别结果:
-  GUSTAV MAERSK-622E-HLCUTA12604FTHP4-1-20GP
+  GUSTAV MAERSK-622E-HLCUTA12502BHSO7-2-20GP
 ```
 
 **不吻合：**
@@ -129,12 +142,26 @@ GUSTV MAER-62E-HLCUTA12604FTHP4-1-20GP+JVBERi0xLjQK...  (base64)
 相似度: 0%
 
 不吻合原因:
-  - 提单号不一致 (期望: HLCUTA12604FTHP5, 识别: HLCUTA12604FTHP4)
+  - 提单号不一致 (期望: HLCUTA12502BHSO7, 识别: HLCUTA12604FFOB3)
 
 标准格式:
-  GUSTV MAER-62E-HLCUTA12604FTHP5-1-20GP
+  GUSTAV MAERSK-622E-HLCUTA12502BHSO7-2-20GP
 识别结果:
-  GUSTAV MAERSK-622E-HLCUTA12604FTHP4-1-20GP
+  MUNICH MAERSK-622W-HLCUTA12604FFOB3-2-20GP
+```
+
+### API 调用示例
+
+```bash
+# 模糊比对（本地文件）
+curl -X POST http://localhost:3000/compare \
+  -H "Content-Type: application/json" \
+  -d '{"combinedFormat": "GUSTAV MAERSK-622E-HLCUTA12502BHSO7-2-20GP+file:///tmp/doc.pdf"}'
+
+# 模糊比对（远程 URL）
+curl -X POST http://localhost:3000/compare \
+  -H "Content-Type: application/json" \
+  -d '{"combinedFormat": "GUSTAV MAERSK-622E-HLCUTA12502BHSO7-2-20GP+https://oss.example.com/doc.pdf"}'
 ```
 
 ## 项目结构
@@ -146,9 +173,9 @@ booking-recognizer/
 ├── api.js                # Express API 服务
 ├── cli.js                # 命令行入口
 ├── validation.js         # 字段校验模块
-├── image-preprocessor.js  # OCR 图像预处理
-├── Dockerfile             # 容器化部署
-├── docker-compose.yml     # 服务编排
+├── image-preprocessor.js # OCR 图像预处理
+├── Dockerfile           # 容器化部署
+├── docker-compose.yml    # 服务编排
 ├── API.md                # API 文档
 ├── README.md             # 本文档
 ├── uploads/              # 临时文件目录
@@ -157,10 +184,13 @@ booking-recognizer/
 
 ## 安全说明
 
-- SSRF 防护：禁止访问内网地址
-- 文件校验：路径穿越防护、PDF 签名头校验（`%PDF`）、50MB 大小限制
-- 可选 API Key：通过 `API_KEY` 环境变量启用
-- 速率限制：每 IP 每 15 分钟最多 100 次请求
+- **SSRF 防护**：禁止访问内网地址（127.x、10.x、192.168.x、localhost 等）
+- **路径穿越防护**：禁止 `..` 和 `%00` 字符
+- **文件校验**：PDF 签名头校验（`%PDF`）、50MB 大小限制
+- **Base64 限制**：请求数据不超过 70MB
+- **可选 API Key**：通过 `API_KEY` 环境变量启用
+- **速率限制**：每 IP 每 15 分钟最多 100 次请求
+- **错误格式统一**：所有接口返回 `{ success: true/false, ... }` 格式
 
 ## License
 
