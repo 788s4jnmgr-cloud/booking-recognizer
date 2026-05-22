@@ -130,6 +130,15 @@ class BookingRecognizer {
       result.voyage = vesselVoyageMatch[2].trim().toUpperCase();
     }
 
+    // 船名航次: 船名航次:\nZHONG GU YIN CHUAN / 25028W (带空格的船名)
+    if (!result.vessel || !result.voyage) {
+      const vesselVoyageSpaceMatch = text.match(/船名航次:\s*([A-Z][A-Z\s]+?)\s*\/\s*(\d{5,7}[A-Z])\b/i);
+      if (vesselVoyageSpaceMatch) {
+        result.vessel = this.normalizeVesselName(vesselVoyageSpaceMatch[1].trim());
+        result.voyage = vesselVoyageSpaceMatch[2].trim().toUpperCase();
+      }
+    }
+
     // VSL&VOY 格式: VSL&VOY：ZHONG GU CHENG DU/25047W
     const vslVoyMatch = text.match(/VSL\s*&\s*VOY[：:\s]*([A-Z\s]+)\/(\d{5,7}[A-Z])/i);
     if (vslVoyMatch) {
