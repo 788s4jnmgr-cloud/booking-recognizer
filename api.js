@@ -193,10 +193,19 @@ setInterval(() => {
 // ============================================
 
 /**
- * 解析 PDF 并返回结构化结果
+ * 解析 PDF 或 Word 并返回结构化结果
  */
-async function parsePDF(pdfPath) {
-  const text = await extractTextFromPDF(pdfPath);
+async function parseDocument(filePath) {
+  let text;
+  const ext = path.extname(filePath).toLowerCase();
+
+  if (ext === '.docx' || ext === '.doc') {
+    const { extractTextFromWord } = require('./pdf-parser');
+    text = await extractTextFromWord(filePath);
+  } else {
+    text = await extractTextFromPDF(filePath);
+  }
+
   const recognizer = new BookingRecognizer();
   const result = recognizer.parse(text);
   result.standardFormat = recognizer.toStandardFormat(result);
@@ -400,7 +409,7 @@ app.post('/parse', authMiddleware, rateLimitMiddleware, async (req, res) => {
     }
 
     // 解析 PDF
-    const result = await parsePDF(pdfPath);
+    const result = await parseDocument(pdfPath);
 
     // 清理临时文件
     safeUnlink(pdfPath);
@@ -477,7 +486,7 @@ app.post('/parse-url', authMiddleware, rateLimitMiddleware, async (req, res) => 
       console.log('PDF 已下载:', pdfPath);
     }
 
-    const result = await parsePDF(pdfPath);
+    const result = await parseDocument(pdfPath);
 
     // 清理临时文件
     safeUnlink(pdfPath);
