@@ -183,7 +183,27 @@ async function batchExtract(pdfPaths) {
   return results;
 }
 
+/**
+ * 从 Word 文件提取文本
+ * @param {string} docxPath - Word 文件路径
+ * @returns {Promise<string>} 提取的文本
+ */
+async function extractTextFromWord(docxPath) {
+  if (!fs.existsSync(docxPath)) {
+    throw new Error(`Word file not found: ${docxPath}`);
+  }
+
+  if (!isValidPDFPath(docxPath)) {
+    throw new Error('无效的文件路径');
+  }
+
+  const mammoth = require('mammoth');
+  const result = await mammoth.extractRawText({ path: docxPath });
+  return result.value;
+}
+
 module.exports = {
   extractTextFromPDF,
+  extractTextFromWord,
   batchExtract
 };
