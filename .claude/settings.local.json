@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm test:*)",
+      "Bash(ls -la C:/Users/huawei/booking-recognizer/*.js)",
+      "Bash(curl:*)",
+      "Bash(node cli.js test2.pdf)",
+      "Bash(node -e \":*)",
+      "Bash(node cli.js test3.pdf)",
+      "Bash(node -e \"const { extractTextFromPDF } = require\\(''./pdf-parser''\\); extractTextFromPDF\\(''test3.pdf''\\).then\\(t => console.log\\(t.substring\\(0, 2000\\)\\)\\);\")",
+      "Bash(node -e \"const { extractTextFromPDF } = require\\(''./pdf-parser''\\); extractTextFromPDF\\(''test3.pdf''\\).then\\(t => console.log\\(''Length:'', t.length, t.slice\\(0,1000\\)\\) \\).catch\\(e => console.error\\(''Error:'', e.message\\)\\);\")",
+      "Bash(node -e \"const { extractTextFromPDF } = require\\(''./pdf-parser''\\); extractTextFromPDF\\(''test3.pdf''\\).then\\(t => { console.log\\(''Raw:'', JSON.stringify\\(t\\)\\); }\\)\")",
+      "Bash(node -e \"const c = require\\(''@napi-rs/canvas''\\); console.log\\(Object.keys\\(c\\)\\);\")",
+      "Bash(npm search:*)",
+      "Bash(node -e \"const m = require\\(''@omsimos/pdf-raster''\\); console.log\\(Object.keys\\(m\\)\\);\")",
+      "Bash(dir /b c:\\\\Users\\\\huawei\\\\booking-recognizer\\\\*.js)"
+    ]
+  }
+}
