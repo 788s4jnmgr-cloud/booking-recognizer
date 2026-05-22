@@ -443,18 +443,39 @@ app.post('/parse-url', authMiddleware, rateLimitMiddleware, async (req, res) => 
       });
     }
 
-    // 验证 URL
-    const validation = isValidUrl(url);
-    if (!validation.valid) {
-      return res.status(200).json({
-        success: false,
-        error: validation.reason
-      });
+    // 处理 file:// 协议（本地文件）
+    if (url.startsWith('file://')) {
+      pdfPath = url.replace('file://', '');
+      // 处理不完整的 file:// URL
+      if (!pdfPath.startsWith('/') && !pdfPath.match(/^[A-Za-z]:/)) {
+        pdfPath = '/' + pdfPath;
+      }
+      // 路径穿越防护
+      if (pdfPath.includes('..') || pdfPath.includes('%00')) {
+        return res.status(200).json({
+          success: false,
+          error: '无效的文件路径'
+        });
+      }
+      if (!fs.existsSync(pdfPath)) {
+        return res.status(200).json({
+          success: false,
+          error: '文件不存在: ' + pdfPath
+        });
+      }
+    } else {
+      // 验证 URL
+      const validation = isValidUrl(url);
+      if (!validation.valid) {
+        return res.status(200).json({
+          success: false,
+          error: validation.reason
+        });
+      }
+      console.log('正在下载 PDF:', url);
+      pdfPath = await downloadPDF(url);
+      console.log('PDF 已下载:', pdfPath);
     }
-
-    console.log('正在下载 PDF:', url);
-    pdfPath = await downloadPDF(url);
-    console.log('PDF 已下载:', pdfPath);
 
     const result = await parsePDF(pdfPath);
 
