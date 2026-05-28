@@ -175,11 +175,42 @@ class BookingRecognizer {
       }
     }
 
-    // 提单号: 提单号：FQD0N00525 或 B/L NO：FQD0D00574
+    // 提单号 & 箱型: 入货通知格式 "提单号：FQD0N00490  2*40HC" 中，BL号与箱型写在同一行
+    // 提取思路：将 "FQD0N004902*40HC" 用 * 分割，前半段末尾数字为箱量，前面的为BL号
     if (!result.blNo) {
-      const blMatch = cleanText.match(/提单号[：:\s]*([A-Z0-9]+)/i);
-      if (blMatch) {
-        result.blNo = blMatch[1].toUpperCase();
+      const blStart = cleanText.indexOf('提单号');
+      if (blStart >= 0) {
+        const afterBl = cleanText.substring(blStart + 4);
+        const nextFieldMatch = afterBl.match(/([一-龥]+[：:\s]|开船时间|卸货港|箱量|截单时间|截港时间)/);
+        const blLine = nextFieldMatch ? afterBl.substring(0, nextFieldMatch.index) : afterBl;
+        if (blLine.includes('*')) {
+          const parts = blLine.split('*');
+          const prefix = parts[0]; // "FQD0N004902"
+          const containerType = parts[1]; // "40HC"
+          // 末位数字为箱量（2*40HC 的 2），前面的为BL号
+          const countMatch = prefix.match(/(\d)(?=\*?$)/);
+          if (countMatch) {
+            const count = parseInt(countMatch[1]);
+            result.blNo = prefix.substring(0, prefix.length - 1).toUpperCase();
+            if (containerType) {
+              const typeMatch = containerType.match(/(40HC|40HQ|40GP|20GP|45GP|45HC)/i);
+              if (typeMatch) {
+                const sizeType = this.normalizeSizeType(typeMatch[1]);
+                for (let i = 0; i < count; i++) {
+                  result.containers.push({ sizeType, containerNo: null });
+                }
+              }
+            }
+          } else {
+            result.blNo = prefix.toUpperCase();
+          }
+        } else {
+          // 无 * 格式，正常提取BL号（通用模式）
+          const blMatch = cleanText.match(/提单号[：:\s]*([A-Z0-9]+?)(?=[一-龥]|$)/i);
+          if (blMatch) {
+            result.blNo = blMatch[1].toUpperCase();
+          }
+        }
       }
     }
     // B/L NO 格式
@@ -220,9 +251,9 @@ class BookingRecognizer {
       }
     }
 
-    // 箱型: 1X40HC 或 VOLUME: 40HC*1 或 1*40HQ
+    // 箱型: 1X40HC (标准) 或 1*40HC (入货通知格式，箱型写在提单号同行)
     if (result.containers.length === 0) {
-      const containerMatch = cleanText.match(/(\d+)X(40HC|40HQ|40GP|20GP|45GP|45HC)/i);
+      const containerMatch = cleanText.match(/(\d+)[X*](40HC|40HQ|40GP|20GP|45GP|45HC)/i);
       if (containerMatch) {
         const count = parseInt(containerMatch[1]);
         const sizeType = this.normalizeSizeType(containerMatch[2]);

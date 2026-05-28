@@ -8,6 +8,7 @@
   - 文件格式：PDF (含扫描件 OCR)、Word (.docx)
   - 文档类型：订舱单（Booking Note）、提单（Bill of Lading）、海运单（Marine B/L）、Seaway Bill、Fixture Note、入货通知（Cargo Receiving Notice）
 - **字段提取**：船名、航次、提单号、箱号、箱型、毛重、体积、ETA/ETD、运费方式等
+- **入货通知格式支持**：`提单号：FQD0N00490 2*40HC`（BL号与箱量箱型写在同一行，用 `*` 分隔）
 - **标准输出**：`船名-航次-提单号-箱量-箱型尺寸`
 - **模糊比对**：支持标准格式与识别结果的模糊比对，提单号/箱量/箱型精确匹配，船名/航次按相似度判定
 - **三种使用方式**：类库调用、CLI 工具、HTTP API 服务
