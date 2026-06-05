@@ -175,11 +175,42 @@ class BookingRecognizer {
       }
     }
 
-    // 提单号: 提单号：FQD0N00525 或 B/L NO：FQD0D00574
+    // 提单号 & 箱型: 入货通知格式 "提单号：FQD0N00490  2*40HC" 中，BL号与箱型写在同一行
+    // 提取思路：将 "FQD0N004902*40HC" 用 * 分割，前半段末尾数字为箱量，前面的为BL号
     if (!result.blNo) {
-      const blMatch = cleanText.match(/提单号[：:\s]*([A-Z0-9]+)/i);
-      if (blMatch) {
-        result.blNo = blMatch[1].toUpperCase();
+      const blStart = cleanText.indexOf('提单号');
+      if (blStart >= 0) {
+        const afterBl = cleanText.substring(blStart + 4);
+        const nextFieldMatch = afterBl.match(/([一-龥]+[：:\s]|开船时间|卸货港|箱量|截单时间|截港时间)/);
+        const blLine = nextFieldMatch ? afterBl.substring(0, nextFieldMatch.index) : afterBl;
+        if (blLine.includes('*')) {
+          const parts = blLine.split('*');
+          const prefix = parts[0]; // "FQD0N004902"
+          const containerType = parts[1]; // "40HC"
+          // 末位数字为箱量（2*40HC 的 2），前面的为BL号
+          const countMatch = prefix.match(/(\d)(?=\*?$)/);
+          if (countMatch) {
+            const count = parseInt(countMatch[1]);
+            result.blNo = prefix.substring(0, prefix.length - 1).toUpperCase();
+            if (containerType) {
+              const typeMatch = containerType.match(/(40HC|40HQ|40GP|20GP|45GP|45HC)/i);
+              if (typeMatch) {
+                const sizeType = this.normalizeSizeType(typeMatch[1]);
+                for (let i = 0; i < count; i++) {
+                  result.containers.push({ sizeType, containerNo: null });
+                }
+              }
+            }
+          } else {
+            result.blNo = prefix.toUpperCase();
+          }
+        } else {
+          // 无 * 格式，正常提取BL号（通用模式）
+          const blMatch = cleanText.match(/提单号[：:\s]*([A-Z0-9]+?)(?=[一-龥]|$)/i);
+          if (blMatch) {
+            result.blNo = blMatch[1].toUpperCase();
+          }
+        }
       }
     }
     // B/L NO 格式
@@ -220,9 +251,9 @@ class BookingRecognizer {
       }
     }
 
-    // 箱型: 1X40HC 或 VOLUME: 40HC*1 或 1*40HQ
+    // 箱型: 1X40HC (标准) 或 1*40HC (入货通知格式，箱型写在提单号同行)
     if (result.containers.length === 0) {
-      const containerMatch = cleanText.match(/(\d+)X(40HC|40HQ|40GP|20GP|45GP|45HC)/i);
+      const containerMatch = cleanText.match(/(\d+)[X*](40HC|40HQ|40GP|20GP|45GP|45HC)/i);
       if (containerMatch) {
         const count = parseInt(containerMatch[1]);
         const sizeType = this.normalizeSizeType(containerMatch[2]);
@@ -415,6 +446,426 @@ class BookingRecognizer {
    */
   toStandardFormat(result) {
     return this.format(result);
+  }
+
+  /**
+   * 计算字符串相似度（基于 Levenshtein 距离）
+   * @param {string} str1
+   * @param {string} str2
+   * @returns {number} 相似度 0.0 - 1.0
+   */
+  calculateSimilarity(str1, str2) {
+    if (!str1 && !str2) return 1.0;
+    if (!str1 || !str2) return 0.0;
+
+    const s1 = str1.toUpperCase().trim();
+    const s2 = str2.toUpperCase().trim();
+
+    if (s1 === s2) return 1.0;
+
+    const len1 = s1.length;
+    const len2 = s2.length;
+    const maxLen = Math.max(len1, len2);
+    if (maxLen === 0) return 1.0;
+
+    // 计算 Levenshtein 距离
+    const matrix = [];
+    for (let i = 0; i <= len1; i++) {
+      matrix[i] = [i];
+    }
+    for (let j = 0; j <= len2; j++) {
+      matrix[0][j] = j;
+    }
+
+    for (let i = 1; i <= len1; i++) {
+      for (let j = 1; j <= len2; j++) {
+        const cost = s1[i-1] === s2[j-1] ? 0 : 1;
+        matrix[i][j] = Math.min(
+          matrix[i-1][j] + 1,      // 删除
+          matrix[i][j-1] + 1,      // 插入
+          matrix[i-1][j-1] + cost  // 替换
+        );
+      }
+    }
+
+    const distance = matrix[len1][len2];
+    return 1 - (distance / maxLen);
+  }
+
+  /**
+   * 解析标准格式字符串
+   * 格式: 船名-航次-提单号-箱量-箱型尺寸
+   * 例如: A.P.MOLLER-622W-HLCUTA12604DJZJ4-2-20GP
+   * @param {string} standardFormat
+   * @returns {Object} 解析后的字段
+   */
+  parseStandardFormat(standardFormat) {
+    if (!standardFormat || typeof standardFormat !== 'string') {
+      return null;
+    }
+
+    const parts = standardFormat.split('-');
+    if (parts.length < 2) return null;
+
+    return {
+      vessel: parts[0] || null,
+      voyage: parts[1] || null,
+      blNo: parts[2] || null,
+      containerCount: parts[3] ? parseInt(parts[3], 10) : null,
+      sizeType: parts[4] || null
+    };
+  }
+
+  /**
+   * 模糊比对识别结果与标准格式
+   * 规则：提单号、箱量、箱型必须完全一致，才进行船名、航次比对
+   * @param {Object} result - parse() 返回的识别结果
+   * @param {string} standardFormat - 标准格式字符串，格式: 船名-航次-提单号-箱量-箱型
+   * @param {number} threshold - 相似度阈值，默认 0.7 (70%)
+   * @returns {Object} 比对结果 { matched: boolean, similarity: number, details: {...} }
+   */
+  fuzzyCompare(result, standardFormat, threshold = 0.7) {
+    const expected = this.parseStandardFormat(standardFormat);
+    if (!expected) {
+      return {
+        matched: false,
+        similarity: 0,
+        error: '无效的标准格式字符串'
+      };
+    }
+
+    const details = {};
+    const exactMatchFields = {};
+    let allFieldsMatched = true;
+
+    // === 第一步：精确匹配检查（提单号、箱量、箱型必须完全一致）===
+
+    // 提单号精确匹配
+    if (expected.blNo) {
+      exactMatchFields.blNo = {
+        expected: expected.blNo,
+        actual: result.blNo,
+        matched: expected.blNo.toUpperCase() === result.blNo?.toUpperCase()
+      };
+      if (!exactMatchFields.blNo.matched) {
+        allFieldsMatched = false;
+      }
+    }
+
+    // 箱量精确匹配
+    if (expected.containerCount != null) {
+      const actualCount = result.containers?.length || 0;
+      exactMatchFields.containerCount = {
+        expected: expected.containerCount,
+        actual: actualCount,
+        matched: expected.containerCount === actualCount
+      };
+      if (!exactMatchFields.containerCount.matched) {
+        allFieldsMatched = false;
+      }
+    }
+
+    // 箱型精确匹配
+    if (expected.sizeType != null) {
+      const actualSizeType = result.containers?.[0]?.sizeType?.toUpperCase() || '';
+      const expectedSizeType = expected.sizeType.toUpperCase();
+      exactMatchFields.sizeType = {
+        expected: expected.sizeType,
+        actual: result.containers?.[0]?.sizeType,
+        matched: expectedSizeType === actualSizeType
+      };
+      if (!exactMatchFields.sizeType.matched) {
+        allFieldsMatched = false;
+      }
+    }
+
+    details.exactMatchFields = exactMatchFields;
+
+    // 如果精确匹配字段不全部一致，直接返回不吻合
+    if (!allFieldsMatched) {
+      return {
+        matched: false,
+        similarity: 0,
+        threshold,
+        details,
+        reason: '精确匹配字段不一致'
+      };
+    }
+
+    // === 第二步：进行船名航次模糊比对 ===
+
+    let totalWeight = 0;
+    let weightedSum = 0;
+
+    // 计算船名相似度
+    if (expected.vessel) {
+      if (result.vessel) {
+        details.vesselSimilarity = this.calculateSimilarity(result.vessel, expected.vessel);
+      } else {
+        details.vesselSimilarity = 0;
+      }
+      weightedSum += details.vesselSimilarity * 0.5;
+      totalWeight += 0.5;
+    } else {
+      details.vesselSimilarity = null;
+    }
+
+    // 计算航次相似度
+    if (expected.voyage) {
+      if (result.voyage) {
+        details.voyageSimilarity = this.calculateSimilarity(result.voyage, expected.voyage);
+      } else {
+        details.voyageSimilarity = 0;
+      }
+      weightedSum += details.voyageSimilarity * 0.5;
+      totalWeight += 0.5;
+    } else {
+      details.voyageSimilarity = null;
+    }
+
+    // 计算船名航次综合相似度
+    let vesselVoyageSimilarity = null;
+    if (details.vesselSimilarity !== null && details.voyageSimilarity !== null) {
+      vesselVoyageSimilarity = (details.vesselSimilarity + details.voyageSimilarity) / 2;
+    } else if (details.vesselSimilarity !== null) {
+      vesselVoyageSimilarity = details.vesselSimilarity;
+    } else if (details.voyageSimilarity !== null) {
+      vesselVoyageSimilarity = details.voyageSimilarity;
+    }
+    details.vesselVoyageSimilarity = vesselVoyageSimilarity;
+
+    // 总体相似度
+    const overallSimilarity = totalWeight > 0 ? weightedSum / totalWeight : 0;
+
+    details.vesselVoyageSimilarity = vesselVoyageSimilarity;
+
+    return {
+      matched: overallSimilarity >= threshold,
+      similarity: Math.round(overallSimilarity * 100) / 100,
+      threshold,
+      details
+    };
+  }
+
+  /**
+   * 解析组合格式字符串
+   * 格式: 船名-航次-提单号-箱量-箱型+文档
+   * 文档: PDF URL 或 base64 编码
+   * @param {string} combinedFormat
+   * @returns {Object} { expected: {...}, document: string, documentType: 'url'|'base64' }
+   */
+  parseCombinedFormat(combinedFormat) {
+    if (!combinedFormat || typeof combinedFormat !== 'string') {
+      return null;
+    }
+
+    // 按最后一个 + 分隔，因为文档URL中可能包含 +
+    const lastPlusIndex = combinedFormat.lastIndexOf('+');
+    if (lastPlusIndex === -1) {
+      return null;
+    }
+
+    const standardFormat = combinedFormat.slice(0, lastPlusIndex).trim();
+    const documentRef = combinedFormat.slice(lastPlusIndex + 1).trim();
+
+    if (!documentRef) {
+      return null;
+    }
+
+    const expected = this.parseStandardFormat(standardFormat);
+    if (!expected) {
+      return null;
+    }
+
+    return {
+      expected,
+      document: documentRef,
+      isUrl: documentRef.startsWith('http://') || documentRef.startsWith('https://')
+    };
+  }
+
+  /**
+   * 格式化比对结果输出
+   * @param {Object} comparisonResult - compareWithDocument 返回的结果
+   * @returns {Object} 格式化后的结果
+   */
+  formatComparisonResult(comparisonResult) {
+    const lines = [];
+    const isMatched = comparisonResult.matched;
+
+    lines.push('========================================');
+    lines.push(`比对结果: ${isMatched ? '✅ 吻合' : '❌ 不吻合'}`);
+
+    if (isMatched) {
+      lines.push(`相似度: ${(comparisonResult.similarity * 100).toFixed(0)}%`);
+      lines.push(`阈值: ${(comparisonResult.threshold * 100).toFixed(0)}%`);
+    } else {
+      lines.push(`相似度: ${(comparisonResult.similarity * 100).toFixed(0)}%`);
+      lines.push('');
+      lines.push('不吻合原因:');
+
+      const ef = comparisonResult.details?.exactMatchFields || {};
+
+      if (ef.blNo && !ef.blNo.matched) {
+        lines.push(`  - 提单号不一致 (期望: ${ef.blNo.expected}, 识别: ${ef.blNo.actual})`);
+      }
+      if (ef.containerCount && !ef.containerCount.matched) {
+        lines.push(`  - 箱量不一致 (期望: ${ef.containerCount.expected}, 识别: ${ef.containerCount.actual})`);
+      }
+      if (ef.sizeType && !ef.sizeType.matched) {
+        lines.push(`  - 箱型不一致 (期望: ${ef.sizeType.expected}, 识别: ${ef.sizeType.actual})`);
+      }
+
+      // 检查精确匹配字段是否全部通过，如果通过但相似度不足则显示模糊匹配原因
+      const anyExactFailed = (ef.blNo && !ef.blNo.matched) || (ef.containerCount && !ef.containerCount.matched) || (ef.sizeType && !ef.sizeType.matched);
+      if (!anyExactFailed) {
+        if (comparisonResult.details?.vesselSimilarity !== null && comparisonResult.details?.vesselSimilarity < comparisonResult.threshold) {
+          lines.push(`  - 船名相似度低于阈值: ${(comparisonResult.details.vesselSimilarity * 100).toFixed(1)}% (期望: ${comparisonResult.expected?.vessel}, 识别: ${comparisonResult.recognized?.vessel})`);
+        }
+        if (comparisonResult.details?.voyageSimilarity !== null && comparisonResult.details?.voyageSimilarity < comparisonResult.threshold) {
+          lines.push(`  - 航次相似度低于阈值: ${(comparisonResult.details.voyageSimilarity * 100).toFixed(1)}% (期望: ${comparisonResult.expected?.voyage}, 识别: ${comparisonResult.recognized?.voyage})`);
+        }
+      }
+    }
+
+    lines.push('');
+    lines.push('标准格式:');
+    const exp = comparisonResult.expected;
+    lines.push(`  ${exp?.vessel || '-'}-${exp?.voyage || '-'}-${exp?.blNo || '-'}-${exp?.containerCount ?? '-'}-${exp?.sizeType || '-'}`);
+
+    lines.push('识别结果:');
+    const rec = comparisonResult.recognized;
+    lines.push(`  ${rec?.vessel || '-'}-${rec?.voyage || '-'}-${rec?.blNo || '-'}-${rec?.containerCount ?? '-'}-${rec?.sizeType || '-'}`);
+
+    return {
+      matched: isMatched,
+      similarity: comparisonResult.similarity,
+      threshold: comparisonResult.threshold,
+      reason: isMatched ? null : this.getMismatchReasons(comparisonResult),
+      formattedOutput: lines.join('\n'),
+      standardFormat: `${exp?.vessel || '-'}-${exp?.voyage || '-'}-${exp?.blNo || '-'}-${exp?.containerCount ?? '-'}-${exp?.sizeType || '-'}`,
+      recognizedFormat: `${rec?.vessel || '-'}-${rec?.voyage || '-'}-${rec?.blNo || '-'}-${rec?.containerCount ?? '-'}-${rec?.sizeType || '-'}`,
+      details: comparisonResult.details
+    };
+  }
+
+  /**
+   * 获取不吻合的详细原因
+   */
+  getMismatchReasons(comparisonResult) {
+    const reasons = [];
+    const ef = comparisonResult.details?.exactMatchFields || {};
+
+    if (ef.blNo && !ef.blNo.matched) {
+      reasons.push({
+        field: '提单号',
+        expected: ef.blNo.expected,
+        actual: ef.blNo.actual,
+        type: 'exact'
+      });
+    }
+    if (ef.containerCount && !ef.containerCount.matched) {
+      reasons.push({
+        field: '箱量',
+        expected: ef.containerCount.expected,
+        actual: ef.containerCount.actual,
+        type: 'exact'
+      });
+    }
+    if (ef.sizeType && !ef.sizeType.matched) {
+      reasons.push({
+        field: '箱型',
+        expected: ef.sizeType.expected,
+        actual: ef.sizeType.actual,
+        type: 'exact'
+      });
+    }
+
+    if (reasons.length === 0) {
+      if (comparisonResult.details?.vesselSimilarity !== null && comparisonResult.details?.vesselSimilarity < comparisonResult.threshold) {
+        reasons.push({
+          field: '船名',
+          expected: comparisonResult.expected?.vessel,
+          actual: comparisonResult.recognized?.vessel,
+          similarity: comparisonResult.details?.vesselSimilarity,
+          type: 'fuzzy'
+        });
+      }
+      if (comparisonResult.details?.voyageSimilarity !== null && comparisonResult.details?.voyageSimilarity < comparisonResult.threshold) {
+        reasons.push({
+          field: '航次',
+          expected: comparisonResult.expected?.voyage,
+          actual: comparisonResult.recognized?.voyage,
+          similarity: comparisonResult.details?.voyageSimilarity,
+          type: 'fuzzy'
+        });
+      }
+    }
+
+    return reasons;
+  }
+
+  /**
+   * 解析组合格式并进行模糊比对
+   * 格式: 船名-航次-提单号-箱量-箱型+文档
+   * 文档: PDF URL 或 base64 编码
+   * @param {string} combinedFormat - 组合格式字符串
+   * @param {Function} pdfExtractor - PDF解析函数 (path/url/base64) => Promise<text>
+   * @param {number} threshold - 相似度阈值，默认 0.7
+   * @returns {Promise<Object>} 比对结果
+   */
+  async compareWithDocument(combinedFormat, pdfExtractor, threshold = 0.7) {
+    const parsed = this.parseCombinedFormat(combinedFormat);
+    if (!parsed) {
+      return {
+        matched: false,
+        similarity: 0,
+        error: '无效的组合格式字符串，格式: 船名-航次-提单号-箱量-箱型+文档(URL或base64)'
+      };
+    }
+
+    // 解析文档获取文本
+    let text;
+    try {
+      if (parsed.isUrl) {
+        text = await pdfExtractor(parsed.document);
+      } else {
+        text = await pdfExtractor(parsed.document);
+      }
+    } catch (err) {
+      return {
+        matched: false,
+        similarity: 0,
+        error: `文档解析失败: ${err.message}`
+      };
+    }
+
+    // 识别文档
+    const result = this.parse(text);
+
+    // 用原始期望格式字符串进行比对
+    const expectedFormat = [
+      parsed.expected.vessel,
+      parsed.expected.voyage,
+      parsed.expected.blNo,
+      parsed.expected.containerCount,
+      parsed.expected.sizeType
+    ].filter(v => v !== null && v !== undefined).join('-');
+
+    // 模糊比对
+    const comparison = this.fuzzyCompare(result, expectedFormat, threshold);
+
+    return {
+      ...comparison,
+      recognized: {
+        vessel: result.vessel,
+        voyage: result.voyage,
+        blNo: result.blNo,
+        containerCount: result.containers?.length || 0,
+        sizeType: result.containers[0]?.sizeType || null
+      },
+      expected: parsed.expected
+    };
   }
 }
 

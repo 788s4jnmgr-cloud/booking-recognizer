@@ -49,7 +49,6 @@ function isValidUrl(urlString) {
       /^10\.\d+\.\d+\.\d+$/,
       /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/,
       /^192\.168\.\d+\.\d+$/,
-      /^172\.(1[5-9]|2\d|3[01])\.\d+\.\d+$/,
       /\.local$/i,
       /^0\.0\.0\.0$/i,
       /^::1$/i,
@@ -194,10 +193,19 @@ setInterval(() => {
 // ============================================
 
 /**
- * 解析 PDF 并返回结构化结果
+ * 解析 PDF 或 Word 并返回结构化结果
  */
-async function parsePDF(pdfPath) {
-  const text = await extractTextFromPDF(pdfPath);
+async function parseDocument(filePath) {
+  let text;
+  const ext = path.extname(filePath).toLowerCase();
+
+  if (ext === '.docx' || ext === '.doc') {
+    const { extractTextFromWord } = require('./pdf-parser');
+    text = await extractTextFromWord(filePath);
+  } else {
+    text = await extractTextFromPDF(filePath);
+  }
+
   const recognizer = new BookingRecognizer();
   const result = recognizer.parse(text);
   result.standardFormat = recognizer.toStandardFormat(result);
@@ -287,12 +295,12 @@ async function downloadPDF(url) {
       reject(new Error(`网络错误: ${err.message}`));
     });
 
-    request.setTimeout(30000, () => {
+    request.setTimeout(60000, () => {
       request.destroy();
       if (fs.existsSync(fileName)) {
         try { fs.unlinkSync(fileName); } catch {}
       }
-      reject(new Error('下载超时（30秒）'));
+      reject(new Error('下载超时（60秒）'));
     });
   });
 }
@@ -345,27 +353,48 @@ app.post('/parse', authMiddleware, rateLimitMiddleware, async (req, res) => {
     if (req.body.url) {
       const validation = isValidUrl(req.body.url);
       if (!validation.valid) {
-        return res.status(400).json({ error: validation.reason });
+        return res.status(200).json({
+          success: false,
+          error: validation.reason
+        });
       }
       pdfPath = await downloadPDF(req.body.url);
     }
     // 2. 处理 base64 编码的 PDF
     else if (req.body.pdfBase64) {
+      // Base64 大小预检查（50MB PDF 的 base64 约 70MB）
+      const maxBase64Size = 70 * 1024 * 1024;
+      if (req.body.pdfBase64.length > maxBase64Size) {
+        return res.status(200).json({
+          success: false,
+          error: '请求数据过大'
+        });
+      }
+
       let buffer;
       try {
         buffer = Buffer.from(req.body.pdfBase64, 'base64');
       } catch {
-        return res.status(400).json({ error: '无效的 Base64 编码' });
+        return res.status(200).json({
+          success: false,
+          error: '无效的 Base64 编码'
+        });
       }
 
       // 验证 PDF 签名
       if (!isValidPDF(buffer)) {
-        return res.status(400).json({ error: '无效的 PDF 文件' });
+        return res.status(200).json({
+          success: false,
+          error: '无效的 PDF 文件'
+        });
       }
 
       // 验证文件大小（不超过 50MB）
       if (buffer.length > 50 * 1024 * 1024) {
-        return res.status(400).json({ error: '文件过大（最大 50MB）' });
+        return res.status(200).json({
+          success: false,
+          error: '文件过大（最大 50MB）'
+        });
       }
 
       const safeName = `${Date.now()}_${Math.random().toString(36).substring(7)}.pdf`;
@@ -373,17 +402,14 @@ app.post('/parse', authMiddleware, rateLimitMiddleware, async (req, res) => {
       fs.writeFileSync(pdfPath, buffer);
     }
     else {
-      return res.status(400).json({
-        error: '请提供 URL 或 base64 编码的 PDF',
-        usage: {
-          url: 'POST { url: "PDF_URL" }',
-          pdfBase64: 'POST { pdfBase64: "BASE64_STRING" }'
-        }
+      return res.status(200).json({
+        success: false,
+        error: '请提供 URL 或 base64 编码的 PDF'
       });
     }
 
     // 解析 PDF
-    const result = await parsePDF(pdfPath);
+    const result = await parseDocument(pdfPath);
 
     // 清理临时文件
     safeUnlink(pdfPath);
@@ -399,12 +425,13 @@ app.post('/parse', authMiddleware, rateLimitMiddleware, async (req, res) => {
 
     console.error('解析错误:', error);
 
-    // 生产环境隐藏详情
     const errorMessage = process.env.NODE_ENV === 'production'
       ? '解析失败'
       : error.message;
 
-    res.status(500).json({
+    // 始终返回 200 和统一格式 (Apifox 契约要求)
+    res.status(200).json({
+      success: false,
       error: '解析失败',
       message: errorMessage
     });
@@ -419,20 +446,47 @@ app.post('/parse-url', authMiddleware, rateLimitMiddleware, async (req, res) => 
     const { url } = req.body;
 
     if (!url) {
-      return res.status(400).json({ error: '请提供 URL' });
+      return res.status(200).json({
+        success: false,
+        error: '请提供 URL'
+      });
     }
 
-    // 验证 URL
-    const validation = isValidUrl(url);
-    if (!validation.valid) {
-      return res.status(400).json({ error: validation.reason });
+    // 处理 file:// 协议（本地文件）
+    if (url.startsWith('file://')) {
+      pdfPath = url.replace('file://', '');
+      // 处理不完整的 file:// URL
+      if (!pdfPath.startsWith('/') && !pdfPath.match(/^[A-Za-z]:/)) {
+        pdfPath = '/' + pdfPath;
+      }
+      // 路径穿越防护
+      if (pdfPath.includes('..') || pdfPath.includes('%00')) {
+        return res.status(200).json({
+          success: false,
+          error: '无效的文件路径'
+        });
+      }
+      if (!fs.existsSync(pdfPath)) {
+        return res.status(200).json({
+          success: false,
+          error: '文件不存在: ' + pdfPath
+        });
+      }
+    } else {
+      // 验证 URL
+      const validation = isValidUrl(url);
+      if (!validation.valid) {
+        return res.status(200).json({
+          success: false,
+          error: validation.reason
+        });
+      }
+      console.log('正在下载 PDF:', url);
+      pdfPath = await downloadPDF(url);
+      console.log('PDF 已下载:', pdfPath);
     }
 
-    console.log('正在下载 PDF:', url);
-    pdfPath = await downloadPDF(url);
-    console.log('PDF 已下载:', pdfPath);
-
-    const result = await parsePDF(pdfPath);
+    const result = await parseDocument(pdfPath);
 
     // 清理临时文件
     safeUnlink(pdfPath);
@@ -452,8 +506,128 @@ app.post('/parse-url', authMiddleware, rateLimitMiddleware, async (req, res) => 
       ? '解析失败'
       : error.message;
 
-    res.status(500).json({
+    // 始终返回 200 和统一格式 (Apifox 契约要求)
+    res.status(200).json({
+      success: false,
       error: '解析失败',
+      message: errorMessage
+    });
+  }
+});
+
+// 模糊比对接口
+app.post('/compare', authMiddleware, rateLimitMiddleware, async (req, res) => {
+  try {
+    const { combinedFormat } = req.body;
+
+    if (!combinedFormat) {
+      return res.status(200).json({
+        success: false,
+        error: '请提供 combinedFormat'
+      });
+    }
+
+    // 解析组合格式
+    const recognizer = new BookingRecognizer();
+    const parsed = recognizer.parseCombinedFormat(combinedFormat);
+
+    if (!parsed) {
+      return res.status(200).json({
+        success: false,
+        error: '无效的组合格式字符串，格式: 船名-航次-提单号-箱量-箱型+文档(URL或base64)'
+      });
+    }
+
+    if (!parsed.isUrl && !parsed.document.startsWith('file://')) {
+      return res.status(200).json({
+        success: false,
+        error: 'compare接口仅支持URL或file://方式解析文档'
+      });
+    }
+
+    // 下载文档
+    let pdfPath;
+    if (parsed.document.startsWith('file://')) {
+      pdfPath = parsed.document.replace('file://', '');
+      // 处理不完整的 file:// URL（如 file://Users/... 缺少 leading slash）
+      if (!pdfPath.startsWith('/') && !pdfPath.match(/^[A-Za-z]:/)) {
+        // Unix 系统上可能是 file://Users/... 应为 file:///Users/...
+        pdfPath = '/' + pdfPath;
+      }
+      // 路径穿越防护
+      if (pdfPath.includes('..') || pdfPath.includes('%00')) {
+        return res.status(200).json({
+          success: false,
+          error: '无效的文件路径'
+        });
+      }
+      if (!fs.existsSync(pdfPath)) {
+        return res.status(200).json({
+          success: false,
+          error: '文件不存在: ' + pdfPath
+        });
+      }
+    } else {
+      console.log('正在下载 PDF:', parsed.document);
+      pdfPath = await downloadPDF(parsed.document);
+      console.log('PDF 已下载:', pdfPath);
+    }
+
+    // 提取文本
+    const text = await extractTextFromPDF(pdfPath);
+
+    // 识别文档
+    const result = recognizer.parse(text);
+
+    // 模糊比对
+    const expectedFormat = [
+      parsed.expected.vessel,
+      parsed.expected.voyage,
+      parsed.expected.blNo,
+      parsed.expected.containerCount,
+      parsed.expected.sizeType
+    ].filter(v => v !== null && v !== undefined).join('-');
+
+    const comparison = recognizer.fuzzyCompare(result, expectedFormat, 0.7);
+
+    // 清理临时文件
+    safeUnlink(pdfPath);
+
+    const formatted = recognizer.formatComparisonResult(comparison);
+
+    res.json({
+      success: true,
+      data: {
+        matched: comparison.matched,
+        similarity: comparison.similarity,
+        threshold: comparison.threshold,
+        standardFormat: formatted.standardFormat,
+        recognizedFormat: formatted.recognizedFormat,
+        formattedOutput: formatted.formattedOutput,
+        details: {
+          expected: parsed.expected,
+          recognized: {
+            vessel: result.vessel,
+            voyage: result.voyage,
+            blNo: result.blNo,
+            containerCount: result.containers?.length || 0,
+            sizeType: result.containers[0]?.sizeType || null
+          },
+          exactMatchFields: comparison.details?.exactMatchFields
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('比对错误:', error);
+
+    const errorMessage = process.env.NODE_ENV === 'production'
+      ? '比对失败'
+      : error.message;
+
+    res.status(200).json({
+      success: false,
+      error: '比对失败',
       message: errorMessage
     });
   }
@@ -472,7 +646,9 @@ app.use((err, req, res, next) => {
     ? '服务器内部错误'
     : err.message;
 
-  res.status(500).json({
+  // 始终返回 200 和统一格式 (Apifox 契约要求)
+  res.status(200).json({
+    success: false,
     error: '服务器内部错误',
     message: errorMessage
   });
