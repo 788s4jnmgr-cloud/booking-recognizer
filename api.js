@@ -307,12 +307,13 @@ async function parseImage(imageBuffer, opts = {}) {
 }
 
 /**
- * 从 URL 下载 PDF（安全版本）
+ * 从 URL 下载 PDF（安全版本，带重试；优先用本机 curl 绕过 CDN 的 Node TLS 指纹检测）
  */
 async function downloadPDF(url) {
   const https = require('https');
   const http = require('http');
   const urlModule = require('url');
+  const { execFile } = require('child_process');
 
   // 验证 URL
   const validation = isValidUrl(url);
@@ -320,16 +321,84 @@ async function downloadPDF(url) {
     throw new Error(`URL 验证失败: ${validation.reason}`);
   }
 
+  const fileName = path.join(uploadsDir, `${Date.now()}_${Math.random().toString(36).substring(7)}.pdf`);
+
+  const MAX_RETRIES = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      // 优先用 curl：避免 Node https.get 的 JA3 指纹被反爬
+      return await downloadViaCurl(url, fileName, execFile);
+    } catch (curlErr) {
+      // curl 不在 / 没下载成功时,回退到 Node https
+      console.warn(`[downloadPDF] curl attempt ${attempt} failed: ${curlErr.message}; falling back to https`);
+      try {
+        return await downloadPDFOnce(url, { https, http, urlModule }, fileName);
+      } catch (nodeErr) {
+        lastErr = nodeErr;
+        const transient = /socket hang up|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|aborted/i.test(nodeErr.message);
+        if (!transient || attempt === MAX_RETRIES) throw nodeErr;
+        const delay = 500 * Math.pow(2, attempt - 1);
+        console.warn(`[downloadPDF] attempt ${attempt}/${MAX_RETRIES} failed: ${nodeErr.message}; retrying in ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+function downloadViaCurl(url, fileName, execFile) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-sSL',                  // silent + follow redirects
+      '--max-time', '60',
+      '--max-filesize', '52428800', // 50MB
+      '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      '-H', 'Accept: application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
+      '-o', fileName,
+      url,
+    ];
+    execFile('curl', args, { windowsHide: true }, (err, _stdout, stderr) => {
+      if (err) {
+        try { fs.unlinkSync(fileName); } catch {}
+        return reject(new Error(`curl ${err.code || 'failed'}: ${(stderr || err.message).trim().slice(0, 200)}`));
+      }
+      // 验证下载到的是 PDF
+      if (!fs.existsSync(fileName) || fs.statSync(fileName).size < 100) {
+        try { fs.unlinkSync(fileName); } catch {}
+        return reject(new Error('curl 下载后文件不存在或过小'));
+      }
+      const fd = fs.openSync(fileName, 'r');
+      const buf = Buffer.alloc(5);
+      fs.readSync(fd, buf, 0, 5, 0);
+      fs.closeSync(fd);
+      if (!(buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46)) { // %PDF
+        try { fs.unlinkSync(fileName); } catch {}
+        return reject(new Error('curl 下载内容不是 PDF (%PDF magic 缺失)'));
+      }
+      resolve(fileName);
+    });
+  });
+}
+
+function downloadPDFOnce(url, { https, http, urlModule }, fileName) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new urlModule.URL(url);
     const protocol = parsedUrl.protocol === 'https:' ? https : http;
 
-    const fileName = path.join(uploadsDir, `${Date.now()}_${Math.random().toString(36).substring(7)}.pdf`);
     const file = fs.createWriteStream(fileName);
     let downloadedSize = 0;
     const MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024; // 50MB
 
-    const request = protocol.get(url, (response) => {
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      'Accept-Encoding': 'identity',
+      'Connection': 'keep-alive',
+    };
+
+    const request = protocol.get(url, { headers }, (response) => {
       // 处理重定向
       if (response.statusCode === 301 || response.statusCode === 302) {
         const redirectUrl = response.headers.location;
