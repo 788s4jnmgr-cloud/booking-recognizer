@@ -7,22 +7,23 @@ class BookingRecognizer {
   constructor() {
     // 字段模式定义
     this.patterns = {
-      bookingNo: /BOOKING\s*(?:NO|Number|No\.?|No)(?:\s+[:\s]|[^a-zA-Z])[:\s]*([A-Z0-9\-]+)/i,
-      fileNo: /FILE\s*(?:NO|Number|No\.?)[:\s]*([A-Z0-9\-]+)/i,
-      blNo: /(?:B[\/\\]L|BILL\s*OF\s*LADING)\s*(?:NO|Number|No\.?)[:\s]*([A-Z0-9]+)/i,
+      bookingNo: /BOOKING\s*(?:NO|Number|No\.?|No)(?:\s+[：:\s]|[^a-zA-Z])[：:\s]*([A-Z0-9\-]+)/i,
+      fileNo: /FILE\s*(?:NO|Number|No\.?)[：:\s]*([A-Z0-9\-]+)/i,
+      blNo: /(?:B[\/\\]L|BILL\s*OF\s*LADING)\s*(?:NO|Number|No\.?)[：:\s]*([A-Z0-9]+)/i,
 
-      vesselVoyage: /VESSEL[:\s]*([A-Z\s]+)\s*(?:VOYAGE|VOY|NO\.?|No)?[:\s]*([A-Z0-9]+)/i,
-      portOfLoading: /(?:PORT\s*OF\s*LOADING|\bPOL\b|LOADING\s*PORT)[:\s]*(.+?)(?=\n|,|PORT|$)/i,
-      portOfDischarge: /(?:PORT\s*OF\s*DISCHARGE|\bPOD\b|DISCHARGE\s*PORT)[:\s]*(.+?)(?=\n|,|PORT|$)/i,
+      vesselVoyage: /VESSEL[：:\s]*([A-Z\s]+)\s*(?:VOYAGE|VOY|NO\.?|No)?[：:\s]*([A-Z0-9]+)/i,
+      portOfLoading: /(?:PORT\s*OF\s*LOADING|\bPOL\b|LOADING\s*PORT|装\s*货\s*港|起\s*运\s*港)[：:\s]*([A-Z][A-Z\s,]+?)(?=\s*\n|\s*,|\s+PORT|\s+装|$)/i,
+      portOfDischarge: /(?:PORT\s*OF\s*DISCHARGE|\bPOD\b|DISCHARGE\s*PORT|卸\s*货\s*港|交\s*货\s*地|目\s*的\s*港)[：:\s]*([A-Z][A-Z\s,]+?)(?=\s*\n|\s*,|\s+PORT|\s+卸|\s+交|$)/i,
 
       containerInfo: /([A-Z]{4}[0-9]{7})\s+(20GP|22GP|40GP|40HC|45HC|45GP|20RF|40RF|20OT|40OT|20FR|40FR)/gi,
-      sealNo: /SEAL\s*(?:NO|Number)[:\s]*([A-Z0-9]+)/i,
-      grossWeight: /GROSS\s*WEIGHT[:\s]*([\d,\.]+)\s*(?:KGS|KG|KILOS?)/i,
-      volume: /VOLUME[:\s]*([\d,\.]+)\s*(?:CBM|M3|CUBIC)/i,
-      eta: /ETA[:\s]*(\d{4}[-\/]\d{2}[-\/]\d{2})/i,
-      etd: /ETD[:\s]*(\d{4}[-\/]\d{2}[-\/]\d{2})/i,
-      shipDate: /ON\s*BOARD[:\s]*(\d{4}[-\/]\d{2}[-\/]\d{2})/i,
-      freight: /FREIGHT[:\s]*(PREPAID|COLLECT)/i
+      sealNo: /SEAL\s*(?:NO|Number)[：:\s]*([A-Z0-9]+)/i,
+      grossWeight: /(?:GROSS\s*WEIGHT|毛\s*重\s*[（(]?\s*KGS?\s*[)）]?)[：:\s]*([\d,\.]+)/i,
+      packages: /(?:件\s*数|包\s*数|PACKAGES?|PCS)[：:\s]*([\d,]+)/i,
+      volume: /VOLUME[：:\s]*([\d,\.]+)\s*(?:CBM|M3|CUBIC)/i,
+      eta: /ETA[：:\s]*(\d{4}[-\/]\d{2}[-\/]\d{2})/i,
+      etd: /ETD[：:\s]*(\d{4}[-\/]\d{2}[-\/]\d{2})/i,
+      shipDate: /ON\s*BOARD[：:\s]*(\d{4}[-\/]\d{2}[-\/]\d{2})/i,
+      freight: /FREIGHT[：:\s]*(PREPAID|COLLECT)/i
     };
   }
 
@@ -125,7 +126,7 @@ class BookingRecognizer {
 
     // 船名航次: 船 名 航 次:ZHONG GU YIN CHUAN 25028W (无斜杠，空格分隔，Word文档)
     if (!result.vessel) {
-      const vesselNoSlashMatch = text.match(/船\s*名\s*航\s*次[:\s]*([A-Z][A-Z\s]+?)\s+(\d{5,7}[A-Z])\b/i);
+      const vesselNoSlashMatch = text.match(/船\s*名\s*航\s*次[：:\s]*([A-Z][A-Z\s]+?)\s+(\d{5,7}[A-Z])\b/i);
       if (vesselNoSlashMatch) {
         result.vessel = this.normalizeVesselName(vesselNoSlashMatch[1].trim());
         result.voyage = vesselNoSlashMatch[2].trim().toUpperCase();
@@ -134,10 +135,19 @@ class BookingRecognizer {
 
     // 船名航次: 船名航次:RACINE26007W (无空格连在一起，cleanText中船名无空格)
     if (!result.vessel) {
-      const vesselVoyageMatch = cleanText.match(/船名航次[:\s]*([A-Z]+)(\d{5,7}[A-Z])/i);
+      const vesselVoyageMatch = cleanText.match(/船名航次[：:\s]*([A-Z]+)(\d{5,7}[A-Z])/i);
       if (vesselVoyageMatch) {
         result.vessel = this.normalizeVesselName(vesselVoyageMatch[1].trim());
         result.voyage = vesselVoyageMatch[2].trim().toUpperCase();
+      }
+    }
+
+    // 船名/航次:NORTHERN MATESTIC/25027W (斜杠在标签里,值也用斜杠)
+    if (!result.vessel) {
+      const vesselSlashMatch = cleanText.match(/船名[\/／]航次[：:\s]*([A-Z][A-Z\s]+?)[\/／](\d{4,6}[A-Z]?)/);
+      if (vesselSlashMatch) {
+        result.vessel = this.normalizeVesselName(vesselSlashMatch[1].trim());
+        result.voyage = vesselSlashMatch[2].trim().toUpperCase();
       }
     }
 
@@ -152,7 +162,7 @@ class BookingRecognizer {
 
     // 船名航次: 船 名 航 次:ZHONG GU YIN CHUAN 25028W (无斜杠，空格分隔)
     if (!result.vessel) {
-      const vesselNoSlashMatch = text.match(/船\s*名\s*航\s*次[:\s]*([A-Z][A-Z\s]+?)\s+(\d{5,7}[A-Z])\b/i);
+      const vesselNoSlashMatch = text.match(/船\s*名\s*航\s*次[：:\s]*([A-Z][A-Z\s]+?)\s+(\d{5,7}[A-Z])\b/i);
       if (vesselNoSlashMatch) {
         result.vessel = this.normalizeVesselName(vesselNoSlashMatch[1].trim());
         result.voyage = vesselNoSlashMatch[2].trim().toUpperCase();
@@ -177,6 +187,7 @@ class BookingRecognizer {
 
     // 提单号 & 箱型: 入货通知格式 "提单号：FQD0N00490  2*40HC" 中，BL号与箱型写在同一行
     // 提取思路：将 "FQD0N004902*40HC" 用 * 分割，前半段末尾数字为箱量，前面的为BL号
+    // 注意：箱型/数量交给 extractContainers 统一处理(避免双重 push),这里只抽 BL 号
     if (!result.blNo) {
       const blStart = cleanText.indexOf('提单号');
       if (blStart >= 0) {
@@ -184,23 +195,12 @@ class BookingRecognizer {
         const nextFieldMatch = afterBl.match(/([一-龥]+[：:\s]|开船时间|卸货港|箱量|截单时间|截港时间)/);
         const blLine = nextFieldMatch ? afterBl.substring(0, nextFieldMatch.index) : afterBl;
         if (blLine.includes('*')) {
+          // "FQD0N004892*40HC" → BL="FQD0N00489",count=2,sizeType="40HC" 留给 extractContainers
           const parts = blLine.split('*');
-          const prefix = parts[0]; // "FQD0N004902"
-          const containerType = parts[1]; // "40HC"
-          // 末位数字为箱量（2*40HC 的 2），前面的为BL号
+          const prefix = parts[0]; // "FQD0N004892"
           const countMatch = prefix.match(/(\d)(?=\*?$)/);
           if (countMatch) {
-            const count = parseInt(countMatch[1]);
             result.blNo = prefix.substring(0, prefix.length - 1).toUpperCase();
-            if (containerType) {
-              const typeMatch = containerType.match(/(40HC|40HQ|40GP|20GP|45GP|45HC)/i);
-              if (typeMatch) {
-                const sizeType = this.normalizeSizeType(typeMatch[1]);
-                for (let i = 0; i < count; i++) {
-                  result.containers.push({ sizeType, containerNo: null });
-                }
-              }
-            }
           } else {
             result.blNo = prefix.toUpperCase();
           }
@@ -363,13 +363,13 @@ class BookingRecognizer {
     // 匹配 PNIT SEASPAN BREEZE 00:01 格式
     const vesselLineMatch = text.match(/PNIT\s+([A-Z][A-Z\s]+?)\s+\d{2}:\d{2}/im);
     // Hapag-Lloyd 格式: Vessel\nMUNICH MAERSK\nDP Voyage: 682932\nVoy. No: 622W
-    const vesselMatch = text.match(/(?:Vessel|VESSEL)[:\s]*\n?([A-Z][A-Z\s.]+?)(?:\s*\n|DP\s*Voyage|Voy\.?\s*No|$)/im);
+    const vesselMatch = text.match(/(?:Vessel|VESSEL)[：:\s]*\n?([A-Z][A-Z\s.]+?)(?:\s*\n|DP\s*Voyage|Voy\.?\s*No|$)/im);
     // Hapag-Lloyd 格式: Voy. No: 622W (优先匹配，忽略 DP Voyage)
-    const voyNoMatch = text.match(/Voy\.?\s*No[:\s]*(\d{2,4}[A-Z]?)/i);
+    const voyNoMatch = text.match(/Voy\.?\s*No[：:\s]*(\d{2,4}[A-Z]?)/i);
     // 标准格式: VOYAGE: 622W
-    const voyageMatch = text.match(/VOYAGE[:\s]*(\d{2,4}[A-Z]?)/i);
+    const voyageMatch = text.match(/VOYAGE[：:\s]*(\d{2,4}[A-Z]?)/i);
     // Hapag-Lloyd DP Voyage: 682932 (最后选项)
-    const dpVoyageMatch = text.match(/DP\s*Voyage[:\s]*(\d{2,4}[A-Z]?)/i);
+    const dpVoyageMatch = text.match(/DP\s*Voyage[：:\s]*(\d{2,4}[A-Z]?)/i);
 
     if (vesselLineMatch) {
       result.vessel = this.normalizeVesselName(vesselLineMatch[1].trim());
@@ -410,8 +410,33 @@ class BookingRecognizer {
       });
     }
 
+    // 箱型×箱量(中文变体: 40HC×2 / 1*40HC / 1x22GP)
+    // 注意:必须在 containerRegex 之后跑,避免误匹配
+    if (containers.length === 0) {
+      // 形如 40HC×2 (箱型在前,数量在后,中间 × / x / * 分隔)
+      const boxCountRegex1 = /(20GP|22GP|40GP|40HC|45HC|20RF|40RF|20OT|40OT|20FR|40FR)\s*[×xX*]\s*(\d+)(?!\s*[A-Z]{4}\d{7})/g;
+      while ((match = boxCountRegex1.exec(text)) !== null) {
+        const sizeType = this.normalizeSizeType(match[1]);
+        const count = parseInt(match[2], 10);
+        for (let i = 0; i < count; i++) {
+          containers.push({ containerNo: null, sizeType });
+        }
+      }
+      // 形如 1*40HQ / 2x40GP (数量在前,箱型在后,中间 * / x 分隔)
+      if (containers.length === 0) {
+        const boxCountRegex2 = /(\d+)\s*[×xX*]\s*(20GP|22GP|40GP|40HC|45HC|20RF|40RF|20OT|40OT|20FR|40FR)/g;
+        while ((match = boxCountRegex2.exec(text)) !== null) {
+          const count = parseInt(match[1], 10);
+          const sizeType = this.normalizeSizeType(match[2]);
+          for (let i = 0; i < count; i++) {
+            containers.push({ containerNo: null, sizeType });
+          }
+        }
+      }
+    }
+
     // 提取封条号
-    const sealRegex = /SEAL[:\s]*(?:NO\.?|Number)?[:\s]*([A-Z0-9]+)/gi;
+    const sealRegex = /SEAL[：:\s]*(?:NO\.?|Number)?[：:\s]*([A-Z0-9]+)/gi;
     const seals = [];
     while ((match = sealRegex.exec(text)) !== null) {
       seals.push(match[1].toUpperCase());

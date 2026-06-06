@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(PADDLE_PDX_MODEL_SOURCE=modelscope PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 python test-paddle-local.py \"E:/下载/ScreenShot_2026-06-06_123749_181.png\")",
+      "Bash(cp \"E:\\\\下载\\\\ScreenShot_2026-06-06_222622_424.png\" uploads/test-4.png)",
+      "Bash(PADDLE_PDX_MODEL_SOURCE=modelscope PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 python test-paddle-local.py \"E:/下载/ScreenShot_2026-06-06_222622_424.png\")",
+      "Bash(git rm *)"
     ]
   }
 }

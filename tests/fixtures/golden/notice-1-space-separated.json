@@ -1,0 +1,17 @@
+{
+  "documentType": "CARGO_RECEIVING_NOTICE",
+  "blNo": "FQDON00309",
+  "vessel": "ZHONGGUYIN CHUAN",
+  "voyage": "25028W",
+  "portOfLoading": null,
+  "portOfDischarge": "BANDARABBAS",
+  "containers": [
+    {
+      "sizeType": "40HC",
+      "containerNo": null
+    }
+  ],
+  "grossWeight": null,
+  "etd": null,
+  "standardFormat": "ZHONGGUYIN CHUAN-25028W-FQDON00309-1-40HC"
+}

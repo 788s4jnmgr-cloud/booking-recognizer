@@ -106,6 +106,40 @@ function isValidPDF(buffer) {
   }
 }
 
+/**
+ * 验证图片文件签名(魔数),返回 { valid, format, reason }。
+ * 支持: PNG / JPG / JPEG
+ */
+function isValidImage(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) {
+    return { valid: false, reason: '文件太小' };
+  }
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 && buffer[1] === 0x50 &&
+    buffer[2] === 0x4e && buffer[3] === 0x47 &&
+    buffer[4] === 0x0d && buffer[5] === 0x0a &&
+    buffer[6] === 0x1a && buffer[7] === 0x0a
+  ) {
+    return { valid: true, format: 'png' };
+  }
+  // JPEG: FF D8 FF (后跟 E0/E1/DB/E2 等)
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { valid: true, format: 'jpg' };
+  }
+  return { valid: false, reason: '无效的图片格式(仅支持 PNG/JPG/JPEG)' };
+}
+
+/**
+ * 从 Buffer 中提取图片魔数对应的扩展名(若无法识别,默认为 png)
+ */
+function detectImageExt(buffer) {
+  const v = isValidImage(buffer);
+  if (v.valid) return v.format === 'jpg' ? 'jpg' : 'png';
+  return 'png';
+}
+
 // ============================================
 // 认证中间件（如果配置了 API_KEY）
 // ============================================
@@ -209,6 +243,66 @@ async function parseDocument(filePath) {
   const recognizer = new BookingRecognizer();
   const result = recognizer.parse(text);
   result.standardFormat = recognizer.toStandardFormat(result);
+  return result;
+}
+
+/**
+ * 解析图片 Buffer 并返回结构化结果(走 PaddleOCR + tesseract 降级)。
+ *
+ * @param {Buffer} imageBuffer - PNG/JPG 图片 buffer
+ * @param {object} [opts] - { lang, preprocess, tesseractLang }
+ */
+async function parseImage(imageBuffer, opts = {}) {
+  const { recognizeImages } = require('./paddle-client');
+
+  // 1. 可选预处理(@napi-rs/canvas + image-preprocessor)
+  let processed = imageBuffer;
+  if (opts.preprocess !== false) {
+    try {
+      // eslint-disable-next-line global-require
+      const pre = require('./image-preprocessor');
+      if (pre && typeof pre.preprocessImage === 'function' && pre.PREPROCESSING_ENABLED) {
+        const { imageBufferToRGBA } = require('./paddle-client');
+        const rgba = imageBufferToRGBA(imageBuffer);
+        if (rgba) {
+          const result = pre.preprocessImage(rgba.data, rgba.width, rgba.height);
+          // preprocessImage 返回 { data, width, height } 或直接 buffer
+          if (result && result.data) {
+            // 重新编码为 PNG buffer
+            const { createCanvas } = require('@napi-rs/canvas');
+            const canvas = createCanvas(result.width, result.height);
+            const ctx = canvas.getContext('2d');
+            const imageData = ctx.createImageData(result.width, result.height);
+            imageData.data.set(result.data);
+            ctx.putImageData(imageData, 0, 0);
+            processed = canvas.toBuffer('image/png');
+          }
+        }
+      }
+    } catch (e) {
+      // 预处理失败 → 静默使用原图
+    }
+  }
+
+  // 2. OCR(自动降级)
+  const base64 = processed.toString('base64');
+  const ocrResult = await recognizeImages([base64], {
+    lang: opts.lang || 'ch',
+    tesseractLang: opts.tesseractLang || 'eng+chi_sim',
+    merge_lines: true,
+  });
+
+  if (!ocrResult || !ocrResult.success) {
+    throw new Error(ocrResult && ocrResult.error ? ocrResult.error : '图片识别失败');
+  }
+
+  // 3. 复用现有识别器解析文本
+  const text = ocrResult.fullText || '';
+  const recognizer = new BookingRecognizer();
+  const result = recognizer.parse(text);
+  result.standardFormat = recognizer.toStandardFormat(result);
+  result.ocrEngine = ocrResult.engine;
+  result.ocrFullText = text;
   return result;
 }
 
@@ -339,7 +433,9 @@ app.get('/', (req, res) => {
     endpoints: {
       'POST /parse': '解析 PDF 文件或 URL',
       'GET /health': '健康检查',
-      'POST /parse-url': '直接解析 URL'
+      'POST /parse-url': '直接解析 URL',
+      'POST /parse-image': '解析 PNG/JPG/JPEG 图片(PaddleOCR + tesseract 降级)',
+      'POST /compare': '模糊比对(标准格式 vs 识别结果)'
     }
   });
 });
@@ -633,6 +729,111 @@ app.post('/compare', authMiddleware, rateLimitMiddleware, async (req, res) => {
   }
 });
 
+// 解析图片:支持 URL / file:// / imageBase64(需要认证,有限流)
+app.post('/parse-image', authMiddleware, rateLimitMiddleware, async (req, res) => {
+  let imagePath = null;
+
+  try {
+    const { url, imageBase64 } = req.body || {};
+
+    if (!url && !imageBase64) {
+      return res.status(200).json({
+        success: false,
+        error: '请提供 url 或 imageBase64'
+      });
+    }
+
+    let imageBuffer = null;
+
+    // 方式 1:URL 下载(包括 file://)
+    if (url) {
+      if (url.startsWith('file://')) {
+        // 本地文件(file:// 模式,与 /parse-url 同样的安全处理)
+        imagePath = url.replace('file://', '');
+        if (!imagePath.startsWith('/') && !imagePath.match(/^[A-Za-z]:/)) {
+          imagePath = '/' + imagePath;
+        }
+        if (imagePath.includes('..') || imagePath.includes('%00')) {
+          return res.status(200).json({ success: false, error: '无效的文件路径' });
+        }
+        if (!fs.existsSync(imagePath)) {
+          return res.status(200).json({ success: false, error: '文件不存在: ' + imagePath });
+        }
+        imageBuffer = fs.readFileSync(imagePath);
+      } else {
+        // HTTP/HTTPS 下载:复用 downloadPDF 但允许任意扩展名
+        const validation = isValidUrl(url);
+        if (!validation.valid) {
+          return res.status(200).json({ success: false, error: validation.reason });
+        }
+        // 复用 downloadPDF(限 50MB, 60s 超时,重定向 SSRF 防护)
+        imagePath = await downloadPDF(url);
+        imageBuffer = fs.readFileSync(imagePath);
+      }
+    }
+    // 方式 2:imageBase64
+    else if (imageBase64) {
+      // 剥离 data:image/png;base64, 前缀
+      let b64 = imageBase64;
+      if (b64.startsWith('data:') && b64.includes(',')) {
+        b64 = b64.substring(b64.indexOf(',') + 1);
+      }
+      // 大小预检(50MB 图片的 base64 约 70MB)
+      const maxBase64Size = 70 * 1024 * 1024;
+      if (b64.length > maxBase64Size) {
+        return res.status(200).json({ success: false, error: '请求数据过大' });
+      }
+      try {
+        imageBuffer = Buffer.from(b64, 'base64');
+      } catch {
+        return res.status(200).json({ success: false, error: '无效的 Base64 编码' });
+      }
+    }
+
+    if (!imageBuffer) {
+      return res.status(200).json({ success: false, error: '未获取到图片内容' });
+    }
+
+    // 文件大小校验
+    if (imageBuffer.length > 50 * 1024 * 1024) {
+      return res.status(200).json({ success: false, error: '文件过大(最大 50MB)' });
+    }
+
+    // 魔数校验
+    const imgCheck = isValidImage(imageBuffer);
+    if (!imgCheck.valid) {
+      return res.status(200).json({ success: false, error: imgCheck.reason });
+    }
+
+    // 调用 parseImage(PaddleOCR + tesseract 降级 + 预处理)
+    const result = await parseImage(imageBuffer, {
+      lang: (req.body && req.body.lang) || 'ch',
+      preprocess: req.body && req.body.preprocess !== false,
+    });
+
+    // 清理临时文件
+    safeUnlink(imagePath);
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    safeUnlink(imagePath);
+    console.error('图片解析错误:', error);
+
+    const errorMessage = process.env.NODE_ENV === 'production'
+      ? '图片解析失败'
+      : error.message;
+
+    res.status(200).json({
+      success: false,
+      error: '图片解析失败',
+      message: errorMessage
+    });
+  }
+});
+
 // 404 处理
 app.use((req, res) => {
   res.status(404).json({ error: '接口不存在' });
@@ -680,6 +881,11 @@ app.listen(PORT, () => {
 ║                                                            ║
 ║  POST /parse-url - 直接解析 URL                             ║
 ║    - Body: { url: "PDF_URL" }                               ║
+║                                                            ║
+║  POST /parse-image - 解析 PNG/JPG/JPEG 图片                 ║
+║    - URL:    { url: "https://.../booking.png" }             ║
+║    - Base64: { imageBase64: "iVBORw0K..." }                 ║
+║    - 引擎:   PaddleOCR(主) + tesseract.js(降级)             ║
 ║                                                            ║
 ╚══════════════════════════════════════════════════════════════╝
 
