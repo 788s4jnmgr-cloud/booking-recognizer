@@ -9,7 +9,7 @@
   - 文档类型：订舱单（Booking Note）、提单（Bill of Lading）、海运单（Marine B/L）、Seaway Bill、Fixture Note、入货通知（Cargo Receiving Notice）
 - **字段提取**：船名、航次、提单号、箱号、箱型、毛重、体积、ETA/ETD、运费方式等
 - **入货通知格式支持**：`提单号：FQD0N00490 2*40HC`（BL号与箱量箱型写在同一行，用 `*` 分隔）
-- **标准输出**：`船名-航次-提单号-箱量-箱型尺寸`
+- **标准输出**：`船名-航次-提单号-箱量-箱型尺寸`，混箱型自动展开为 `2x40HC+1x20GP`
 - **模糊比对**：支持标准格式与识别结果的模糊比对，提单号/箱量/箱型精确匹配，船名/航次按相似度判定
 - **三种使用方式**：类库调用、CLI 工具、HTTP API 服务
 - **OCR 支持**：内置 tesseract.js，支持扫描件 PDF 识别（中英文）
@@ -101,10 +101,19 @@ API_KEY=your-secret-key node api.js
 船名-航次-提单号-箱量-箱型+文档
 ```
 
+**中转多船场景**：
+```
+主船-主航次-提单号-箱量-箱型+副船-副航次+文档
+```
+
 示例：
 ```
+# 单船
 GUSTAV MAERSK-622E-HLCUTA12604FTHP4-1-20GP+https://oss.example.com/doc.pdf
 GUSTAV MAERSK-622E-HLCUTA12604FTHP4-1-20GP+file:///path/to/doc.pdf
+
+# 中转 (SEASPAN PRIDE → MERKUR OCEAN)
+SEASPANPRIDE-624W-HLCUTA12605GGMT7-2-40HC+MERKUROCEAN-2630S+https://oss.example.com/doc.pdf
 ```
 
 ### 文档路径格式
