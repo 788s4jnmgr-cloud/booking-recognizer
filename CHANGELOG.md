@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.1.5] - 2026-06-07
+
+### Fixed
+- **船名误识别 (vessel_name_misrecognition)**: 旧版 `i` 标志导致 `[A-Z]` 匹配到正文小写 "vessel"，抓到"schedule you initially requested may have changed..." 等英文句子作为船名。修复: 改用 `Voy. No` 锚点反向查找策略，找锚点前 400 字符内"全大写多词行"，并用黑名单过滤模板标签 (VESSEL/DP VOYAGE/IMO NO/CALL SIGN/FLAG)、港口名 (QINGDAO/ROTTERDAM/APM2 等) 和机构 (HAPAG-LLOYD/KUEHNE & NAGEL)。
+- **箱量冲突 (summary_detail_conflict)**: 旧版 `boxCountRegex2` 备选不包含 `45GP`，导致 `2x45GP,1x22GP` 只命中 `1x22GP` 得 1 箱；且当 PDF 摘要"1x45GP"与明细"145GP/245GP"冲突时优先取了摘要。修复: (1) 通用箱型模式 `(?:20|22|40|45)(?:GP|HC|RF|OT|FR|HQ)` 覆盖所有内部叫法; (2) `extractHLCFields` 优先解析明细列表 (HIGH CUBE CONT. / GENERAL PURPOSE CONT. / REEFER CONT. 等)，按出现顺序展开; 摘要仅作 fallback。
+- **毛重欧式格式错算 (gross_weight_european_format)**: 旧版 `parseFloat("10860,0".replace(/,/g, ''))` 把欧式小数 "10860,0" 当 thousands 分隔符错算为 108600。修复: 新增 `parseLocalizedNumber()` 智能识别欧式 (1.234,56) vs 美式 (1,234.56) 数字格式; 并新增 `computeGrossWeight()` 优先 Σ 各箱 "Gross Weight: X KGM" 明细求和。
+- **明细描述丢空格容差**: 新正则 `[\d'"]+` 兼容 `40'X8'X9'6"HIGHCUBECONT.` (无空格) 和 `40' X 8' X 9'6" HIGH CUBE CONT.` (有空格) 两种 PDF 解析结果。
+
+### Added
+- **中转多船支持 (transshipment_2nd_vessel)**: 提取副船名+副航次 (从第二个 `Voy. No` 锚点反向查找)，用于 SEASPAN PRIDE → MERKUR OCEAN 这种 QINGDAO→TANGER MED→APAPA 的转船场景。combinedFormat 改为 `主船-主航次-提单号-箱量-箱型+副船-副航次+URL`。
+- **混箱型 format()**: 单箱型输出 "3-40HC" (向后兼容)，混箱型输出 "3-2x40HC+1x20GP" (按出现顺序拼接)。`parseStandardFormat` 同时支持解析两种格式 (新增 `containerTypes` 数组字段)。
+- **`parseLocalizedNumber()`**: 欧/美式数字格式自动识别 (`10860,0` / `10,860.50` / `10.860,50` 都能正确解析)。
+- **`findVesselNameByVoyNoAnchor()`**: 通用船名反向查找工具，可被其他文档类型复用。
+- **`sizeTypeFromDetail()`**: 从明细描述 (HIGH CUBE / GENERAL PURPOSE / REEFER 等) + 长度推导箱型。
+- **`formatContainerSummary()`**: 箱型摘要统一方法，单一/混合箱型自动判断。
+
+### Tested
+- **MUNKEBO MAERSK (1780623688152.PDF) 端到端回归**:
+  - 旧: `MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-1-20GP` (containers=1, grossWeight=160140)
+  - 新: `MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-2x40HC+1x20GP` (containers=3, grossWeight=27280) ✅
+- **SEASPAN PRIDE (1780552096445.pdf) 端到端回归**:
+  - 旧: `scheduleyouinitiallyrequestedmayhavechanged.Please-624W-HLCUTA12605GGMT7-1-40HC` (船名错, 漏 1 箱, 漏副船)
+  - 新: `SEASPANPRIDE-624W-HLCUTA12605GGMT7-2-40HC+MERKUROCEAN-2630S+<URL>` ✅
+- **训练样本**: `outputs/booking-corrections/2026-06-07.csv` 升级 schema (新增 `deviation_type` 列)，新增 SEASPAN PRIDE / gross_weight_european_format / transshipment_2nd_vessel 三类共 4 条偏差样本。
+
 ## [1.1.4] - 2026-06-06
 
 ### Added

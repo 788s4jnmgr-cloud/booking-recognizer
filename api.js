@@ -247,6 +247,29 @@ async function parseDocument(filePath) {
 }
 
 /**
+ * 在 parseDocument 结果上附加 combinedFormat（标准格式 + 来源 URL）。
+ * 用于追溯 PDF 来源到结构化记录。
+ *
+ * 单船场景: <vessel>-<voyage>-<blNo>-<count>-<sizeType>+<URL>
+ * 中转场景: <vessel>-<voyage>-<blNo>-<count>-<sizeType>+<vessel2>-<voyage2>+<URL>
+ * 混箱型场景: <vessel>-<voyage>-<blNo>-<count>-<sizeType1>+<sizeType2>...+<URL>
+ */
+function attachCombinedFormat(result, sourceUrl) {
+  if (!result || !sourceUrl) return result;
+  if (!result.standardFormat) return result;
+
+  let middle = result.standardFormat;
+
+  // 副船追加: <标准格式>+<副船>-<副航次>
+  if (result.secondVessel && result.secondVoyage) {
+    middle = `${middle}+${result.secondVessel}-${result.secondVoyage}`;
+  }
+
+  result.combinedFormat = `${middle}+${sourceUrl}`;
+  return result;
+}
+
+/**
  * 解析图片 Buffer 并返回结构化结果(走 PaddleOCR + tesseract 降级)。
  *
  * @param {Buffer} imageBuffer - PNG/JPG 图片 buffer
@@ -579,6 +602,11 @@ app.post('/parse', authMiddleware, rateLimitMiddleware, async (req, res) => {
     // 清理临时文件
     safeUnlink(pdfPath);
 
+    // 注入 combinedFormat（标准格式 + 来源 URL；仅 URL 模式有值）
+    if (req.body.url) {
+      attachCombinedFormat(result, req.body.url);
+    }
+
     res.json({
       success: true,
       data: result
@@ -655,6 +683,9 @@ app.post('/parse-url', authMiddleware, rateLimitMiddleware, async (req, res) => 
 
     // 清理临时文件
     safeUnlink(pdfPath);
+
+    // 注入 combinedFormat（标准格式 + 来源 URL）
+    attachCombinedFormat(result, url);
 
     res.json({
       success: true,
@@ -882,6 +913,11 @@ app.post('/parse-image', authMiddleware, rateLimitMiddleware, async (req, res) =
 
     // 清理临时文件
     safeUnlink(imagePath);
+
+    // 注入 combinedFormat（标准格式 + 来源 URL；仅 URL 模式有值）
+    if (url && !url.startsWith('file://')) {
+      attachCombinedFormat(result, url);
+    }
 
     res.json({
       success: true,
