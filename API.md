@@ -129,7 +129,7 @@ X-API-Key: your-api-key  # 可选，如配置了 API_KEY 则必填
 | volume | number | 体积（立方米） |
 | eta | string | 预计到达时间 |
 | freight | string | 运费：PREPAID/COLLECT |
-| standardFormat | string | 标准格式：船名-航次-提单号-箱量-箱型 |
+| standardFormat | string | 标准格式：船名-航次-提单号-箱量-箱型(混箱型时箱型部分用方括号包裹,如 `...-3-[2x40HC+1x20GP]`) |
 
 ---
 
@@ -641,4 +641,9 @@ pkill -f "node api.js" && node api.js
 
 `船名-航次-提单号-箱量-箱型尺寸`
 
-示例：`A.P.MOLLER-622W-HLCUSHA2603BWGA7-1-40HC`
+**单箱型示例**：`A.P.MOLLER-622W-HLCUSHA2603BWGA7-1-40HC`
+
+**混箱型示例**：`MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-[2x40HC+1x20GP]`
+
+> 混箱型用方括号 `[...]` 包裹多箱型摘要,`+` 分隔各箱型;`parseStandardFormat` 同时支持反向解析(混箱型时返回 `containerTypes` 数组)。
+> 箱型归一化规则:`22GP→20GP`、`45GP→40HC`、`40HQ→40HC`,详情见 [tests/fixtures/README.md](./tests/fixtures/README.md)。

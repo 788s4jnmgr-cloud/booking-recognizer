@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.1.6] - 2026-06-09
+
+### Added
+- **混箱型测试 fixture #5 (notice-5-mixed-types)**: 新增英文 PDF booking confirmation 回归基准(Hapag-Lloyd / MUNKEBO MAERSK-624W / 3 箱混装 `2x40HC+1x20GP`)
+  - `tests/fixtures/pdfs/notice-5-mixed-types.pdf` (88KB,自带文本层)
+  - `tests/fixtures/ocr/notice-5-mixed-types.txt` (pdf-parse 抽取)
+  - `tests/fixtures/golden/notice-5-mixed-types.json` (BookingRecognizer 期望输出)
+- **PDF fixture 工作流**: 文档自带文本层时,`pdf-parse` 直接抽文本,不依赖 PaddleOCR(`generate-golden-fixtures.js` 通用,自动适配 ocr/*.txt 来源)
+- **PaddleOCR 2.x / 3.x 双版本兼容**(`paddle-service/app/ocr.py`):
+  - 自动检测 `paddleocr.__version__`,2.x 用 `use_angle_cls`/`show_log`/`use_gpu`,3.x 用 `use_textline_orientation` + 显式锁 `PP-OCRv5_mobile_det/rec` 模型
+  - 3.x predict() 兼容 2.x 旧 API(`TypeError` 兜底回退)和 3.2+ 新 `OCRResult` 对象(`getattr(page, "json", {}).get("res")`)
+- **模糊比对箱型/箱量子集匹配**: 识别结果包含期望字段的全部箱型即判定通过;箱量 `actual >= expected` 即可(`识别多算 OK,少算 fail`)
+  - `formatContainerSummary` 混箱型输出加方括号 `2x40HC+1x20GP` → `[2x40HC+1x20GP]`
+  - `parseStandardFormat` 兼容半角 `[]`、全角 `【】`、半角 `()`、全角 `（）` 四种括号
+  - `formatComparisonResult` 错误消息区分「箱量不足」「箱型缺失」两类原因
+
+### Changed
+- **依赖锁定** `paddle-service/requirements.txt`:
+  - `paddlepaddle 2.6.1` + `paddleocr 2.7.3` → `paddlepaddle 3.1.1` + `paddleocr 3.6.0`
+  - 备注:不要升 paddlepaddle 3.3+ (PIR + onednn 有 `ConvertPirAttribute2RuntimeAttribute` bug)
+- **移除** `api.js` 中 `attachCombinedFormat()` 的 3 处自动注入调用(`/parse` / `/parse-url` / `/parse-image` 端点);函数保留供 `/compare` 内部使用
+- **README.md**: 移除所有 Docker 部署说明(Dockerfile / docker-compose.yml / `docker compose up` 命令),改写为本地 Python venv 部署(`python -m venv .venv` + `uvicorn`)
+
+### Tested
+- **5 个 fixture 端到端回归**: notice-1~4 (PaddleOCR 3.6.0 + 修复后 BookingRecognizer) + notice-5 (pdf-parse + 修复后 BookingRecognizer),全部通过
+- **notice-5 实际输出**:
+  - `MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-[2x40HC+1x20GP]` (containers=3, grossWeight=27280) ✅
+  - 旧版会漏抽 2 箱(`2x45GP,1x22GP` 只命中 `1x22GP`)并漏副船信息
+
 ## [1.1.5] - 2026-06-07
 
 ### Fixed

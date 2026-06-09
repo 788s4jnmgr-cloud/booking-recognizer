@@ -602,10 +602,6 @@ app.post('/parse', authMiddleware, rateLimitMiddleware, async (req, res) => {
     // 清理临时文件
     safeUnlink(pdfPath);
 
-    // 注入 combinedFormat（标准格式 + 来源 URL；仅 URL 模式有值）
-    if (req.body.url) {
-      attachCombinedFormat(result, req.body.url);
-    }
 
     res.json({
       success: true,
@@ -683,9 +679,6 @@ app.post('/parse-url', authMiddleware, rateLimitMiddleware, async (req, res) => 
 
     // 清理临时文件
     safeUnlink(pdfPath);
-
-    // 注入 combinedFormat（标准格式 + 来源 URL）
-    attachCombinedFormat(result, url);
 
     res.json({
       success: true,
@@ -914,10 +907,7 @@ app.post('/parse-image', authMiddleware, rateLimitMiddleware, async (req, res) =
     // 清理临时文件
     safeUnlink(imagePath);
 
-    // 注入 combinedFormat（标准格式 + 来源 URL；仅 URL 模式有值）
-    if (url && !url.startsWith('file://')) {
-      attachCombinedFormat(result, url);
-    }
+
 
     res.json({
       success: true,

@@ -664,7 +664,7 @@ class BookingRecognizer {
    * 格式化输出
    * 格式: 船名-航次-提单号-箱量-箱型尺寸
    * - 单箱型: "MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-40HC"
-   * - 混箱型: "MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-2x40HC+1x20GP"
+   * - 混箱型: "MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-[2x40HC+1x20GP]"
    */
   format(result) {
     const vesselVoyage = result.vessel && result.voyage
@@ -705,9 +705,9 @@ class BookingRecognizer {
       // 单一箱型
       return `${total}-${seen[0]}`;
     } else {
-      // 混箱型
+      // 混箱型 — 用方括号包裹
       const mixed = seen.map(t => `${counts[t]}x${t}`).join('+');
-      return `${total}-${mixed}`;
+      return `${total}-[${mixed}]`;
     }
   }
 
@@ -782,12 +782,14 @@ class BookingRecognizer {
 
     const sizeTypeRaw = headParts.length > 4 ? headParts.slice(4).join('-') : (headParts[4] || null);
 
-    // 解析箱型: "40HC" 或 "2x40HC+1x20GP"
+    // 解析箱型: "40HC" 或 "[2x40HC+1x20GP]"（混箱型被方括号包裹,先剥掉再解析）
+    // 兼容:全角方括号【】、半角方括号[]、全角圆括号（）、半角圆括号()
+    const sizeTypeStripped = sizeTypeRaw ? sizeTypeRaw.replace(/^[（(\[【]|[）)\]】]$/g, '') : sizeTypeRaw;
     let containerTypes = null;
-    if (sizeTypeRaw) {
-      if (sizeTypeRaw.includes('+')) {
+    if (sizeTypeStripped) {
+      if (sizeTypeStripped.includes('+')) {
         // 混箱型: ["2x40HC", "1x20GP"]
-        containerTypes = sizeTypeRaw.split('+').map(s => {
+        containerTypes = sizeTypeStripped.split('+').map(s => {
           const m = s.match(/^(\d+)?x?(20GP|22GP|40GP|40HC|45HC|45GP|20RF|40RF|20OT|40OT|20FR|40FR)$/i);
           if (!m) return null;
           return {
@@ -796,8 +798,16 @@ class BookingRecognizer {
           };
         }).filter(Boolean);
       } else {
-        // 单箱型
-        containerTypes = [{ count: 1, sizeType: sizeTypeRaw.toUpperCase() }];
+        // 单箱型 — 同样应用正则剥掉 "Nx" 前缀 (e.g. "1x20GP" -> count:1, sizeType:20GP)
+        const m = sizeTypeStripped.match(/^(\d+)?x?(20GP|22GP|40GP|40HC|45HC|45GP|20RF|40RF|20OT|40OT|20FR|40FR)$/i);
+        if (m) {
+          containerTypes = [{
+            count: m[1] ? parseInt(m[1], 10) : 1,
+            sizeType: m[2].toUpperCase()
+          }];
+        } else {
+          containerTypes = [{ count: 1, sizeType: sizeTypeStripped.toUpperCase() }];
+        }
       }
     }
 
@@ -847,27 +857,31 @@ class BookingRecognizer {
       }
     }
 
-    // 箱量精确匹配
+    // 箱量子集匹配: actual >= expected 即过 (识别多算 OK, 少算 fail)
     if (expected.containerCount != null) {
       const actualCount = result.containers?.length || 0;
       exactMatchFields.containerCount = {
         expected: expected.containerCount,
         actual: actualCount,
-        matched: expected.containerCount === actualCount
+        matched: actualCount >= expected.containerCount
       };
       if (!exactMatchFields.containerCount.matched) {
         allFieldsMatched = false;
       }
     }
 
-    // 箱型精确匹配
-    if (expected.sizeType != null) {
-      const actualSizeType = result.containers?.[0]?.sizeType?.toUpperCase() || '';
-      const expectedSizeType = expected.sizeType.toUpperCase();
+    // 箱型子集匹配: expected 的所有箱型尺寸必须出现在 result.containers 中(识别出更多不计入失败)
+    if (expected.containerTypes && expected.containerTypes.length > 0) {
+      const actualTypes = new Set(
+        (result.containers || []).map(c => (c.sizeType || '').toUpperCase()).filter(Boolean)
+      );
+      const expectedTypes = expected.containerTypes.map(t => t.sizeType.toUpperCase());
+      const missingTypes = expectedTypes.filter(t => !actualTypes.has(t));
       exactMatchFields.sizeType = {
         expected: expected.sizeType,
-        actual: result.containers?.[0]?.sizeType,
-        matched: expectedSizeType === actualSizeType
+        actual: [...actualTypes].join('+') || '(无)',
+        matched: missingTypes.length === 0,
+        missingTypes,
       };
       if (!exactMatchFields.sizeType.matched) {
         allFieldsMatched = false;
@@ -1005,10 +1019,14 @@ class BookingRecognizer {
         lines.push(`  - 提单号不一致 (期望: ${ef.blNo.expected}, 识别: ${ef.blNo.actual})`);
       }
       if (ef.containerCount && !ef.containerCount.matched) {
-        lines.push(`  - 箱量不一致 (期望: ${ef.containerCount.expected}, 识别: ${ef.containerCount.actual})`);
+        lines.push(`  - 箱量不足 (期望 ≥${ef.containerCount.expected}, 识别: ${ef.containerCount.actual})`);
       }
       if (ef.sizeType && !ef.sizeType.matched) {
-        lines.push(`  - 箱型不一致 (期望: ${ef.sizeType.expected}, 识别: ${ef.sizeType.actual})`);
+        if (ef.sizeType.missingTypes && ef.sizeType.missingTypes.length > 0) {
+          lines.push(`  - 箱型缺失: ${ef.sizeType.missingTypes.join(', ')} (期望: ${ef.sizeType.expected}, 识别: ${ef.sizeType.actual})`);
+        } else {
+          lines.push(`  - 箱型不一致 (期望: ${ef.sizeType.expected}, 识别: ${ef.sizeType.actual})`);
+        }
       }
 
       // 检查精确匹配字段是否全部通过，如果通过但相似度不足则显示模糊匹配原因
@@ -1064,7 +1082,7 @@ class BookingRecognizer {
         field: '箱量',
         expected: ef.containerCount.expected,
         actual: ef.containerCount.actual,
-        type: 'exact'
+        type: 'subset'
       });
     }
     if (ef.sizeType && !ef.sizeType.matched) {
@@ -1072,7 +1090,8 @@ class BookingRecognizer {
         field: '箱型',
         expected: ef.sizeType.expected,
         actual: ef.sizeType.actual,
-        type: 'exact'
+        missingTypes: ef.sizeType.missingTypes || [],
+        type: 'subset'
       });
     }
 

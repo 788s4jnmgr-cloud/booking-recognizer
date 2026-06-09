@@ -7,8 +7,8 @@
   "portOfDischarge": "BANDARABBAS",
   "containers": [
     {
-      "sizeType": "40HC",
-      "containerNo": null
+      "containerNo": null,
+      "sizeType": "40HC"
     }
   ],
   "grossWeight": null,

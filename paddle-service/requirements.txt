@@ -1,7 +1,9 @@
 # PaddleOCR 核心
 # 注意:paddlepaddle 与 paddleocr 版本需严格匹配,见 https://www.paddlepaddle.org.cn/install/quick
-paddlepaddle==2.6.1
-paddleocr==2.7.3
+# 本地测试过的组合(2026-06):paddlepaddle 3.1.1 + paddleocr 3.6.0,无 onednn bug
+# 注:不要升 paddlepaddle 3.3+ (PIR + onednn 有 ConvertPirAttribute2RuntimeAttribute bug)
+paddlepaddle==3.1.1
+paddleocr==3.6.0
 
 # Web 框架
 fastapi==0.115.0

@@ -187,13 +187,11 @@ booking-recognizer/
 ├── validation.js         # 字段校验模块
 ├── image-preprocessor.js # OCR 图像预处理
 ├── paddle-client.js      # Node 端 PaddleOCR 客户端（含 tesseract 降级）
-├── paddle-service/       # PaddleOCR Python 微服务（FastAPI + PP-OCRv4）
+├── paddle-service/       # PaddleOCR Python 微服务（FastAPI + PP-OCRv5）
 │   ├── app/              # main.py / ocr.py / schemas.py
 │   ├── tests/            # pytest 单元测试
-│   ├── Dockerfile
+│   ├── requirements.txt
 │   └── README.md
-├── Dockerfile            # Node 镜像构建
-├── docker-compose.yml    # 服务编排（含 paddleocr 容器）
 ├── API.md                # API 文档
 ├── README.md             # 本文档
 ├── uploads/              # 临时文件目录
@@ -201,9 +199,10 @@ booking-recognizer/
 ├── test-paddle-local.py  # 本地 PaddleOCR 单图测试
 ├── generate-ocr-fixtures.py    # 批量生成 OCR 文本 fixture
 ├── generate-golden-fixtures.js # 批量生成 BookingRecognizer golden fixture
-└── tests/fixtures/       # 入货通知 OCR 测试 fixture 库
-    ├── images/                # 4 张原图
-    ├── ocr/                   # PaddleOCR 纯文本输出
+└── tests/fixtures/       # 入货通知 / booking confirmation OCR 测试 fixture 库
+    ├── images/                # 4 张原图(中文入货通知,走 PaddleOCR)
+    ├── pdfs/                  # 源 PDF(自带文本层,走 pdf-parse)
+    ├── ocr/                   # PaddleOCR / pdf-parse 纯文本输出
     ├── golden/                # BookingRecognizer 结构化字段
     └── README.md              # fixture 说明
 ```
@@ -215,50 +214,51 @@ booking-recognizer/
 | `PORT` | `3000` | API 服务端口 |
 | `API_KEY` | (空) | API Key 认证,未设置则跳过 |
 | `NODE_ENV` | `development` | 生产环境设为 `production` 隐藏详细错误 |
-| `PADDLE_OCR_URL` | `http://paddleocr:8866/ocr` | PaddleOCR 服务 URL |
+| `PADDLE_OCR_URL` | `http://127.0.0.1:8866/ocr` | PaddleOCR 服务 URL |
 | `PADDLE_TIMEOUT_MS` | `90000` | PaddleOCR 单请求超时(毫秒) |
 | `PADDLE_ENABLED` | `true` | PaddleOCR 总开关,`false` 时直接走 tesseract |
 | `PADDLE_MAX_CONCURRENCY` | `4` | Node→Paddle 最大并发数 |
 | `OCR_ENGINE_DISABLED` | `false` | 紧急熔断(运维用,跳过 Paddle 直接 tesseract) |
 
-## PaddleOCR 部署
+## PaddleOCR 部署(本地 venv)
 
-`docker-compose.yml` 已编排两个服务:`booking-recognizer`(Node)和 `paddleocr`(Python FastAPI)。
-首次启动需下载 PaddleOCR 模型(~100MB),通过 `paddle-models` named volume 持久化。
-
-```bash
-# 启动全栈
-docker compose up -d
-
-# 查看 PaddleOCR 健康
-docker compose logs paddleocr
-curl http://localhost:8866/health   # 200 表示服务在线
-curl http://localhost:8866/ready    # 200 表示模型加载完成
-```
-
-PaddleOCR 不可用时,Node 端自动降级到 tesseract.js,不中断服务。
-
-### 本地 PaddleOCR 测试(无 Docker 方案)
-
-跳过容器,直接在 Python 环境跑 PaddleOCR 3.x 做端到端验证:
+PaddleOCR 走本地 Python 虚拟环境,Node 端通过 `PADDLE_OCR_URL` HTTP 调用 Python FastAPI 服务(默认 `http://127.0.0.1:8866/ocr`)。PaddleOCR 不可用时,Node 端自动降级到 tesseract.js,不中断服务。
 
 ```bash
-# 1. 装依赖(Windows Python 3.13 实测通过)
-pip install paddlepaddle paddleocr
+# 1. 创建虚拟环境(Windows / Mac / Linux 通用)
+cd paddle-service
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# Mac / Linux
+source .venv/bin/activate
 
-# 2. 跑入货通知图
-PADDLE_PDX_MODEL_SOURCE=modelscope PYTHONIOENCODING=utf-8 \
-  python test-paddle-local.py <image_path>
+# 2. 装依赖(锁定的版本组合在 Windows Python 3.13 实测通过)
+pip install -r requirements.txt
+
+# 3. 启动 PaddleOCR 服务
+uvicorn app.main:app --host 0.0.0.0 --port 8866
+# 健康检查
+curl http://127.0.0.1:8866/health   # 200 表示服务在线
+curl http://127.0.0.1:8866/ready    # 200 表示模型加载完成
+
+# 4. 另开终端启动 Node API
+node api.js
 ```
+
+**依赖版本**(`paddle-service/requirements.txt`):
+- `paddlepaddle==3.1.1` + `paddleocr==3.6.0`(2026-06 实测组合,无 onednn bug)
+- ⚠️ 不要升 paddlepaddle 3.3+(PIR + onednn 有 `ConvertPirAttribute2RuntimeAttribute` bug)
+- `paddle-service/app/ocr.py` 自动兼容 paddleocr 2.x(`use_angle_cls`/`show_log`)和 3.x(`use_textline_orientation`)
 
 **注意**:
-- 首次运行会从 ModelScope 下载模型(~166MB,缓存在 `~/.paddlex/`)
-- PaddleX 3.6 + paddlepaddle 3.3.1 在 CPU 上有 `MKLDNN` 算子 bug,脚本内已 `FLAGS_use_mkldnn=0` 绕过
-- 模型加载 ~6s,单图识别 ~110s(纯 CPU,生产建议 GPU)
+- 首次运行会从 ModelScope 下载 PP-OCRv5_mobile 模型(~166MB,缓存在 `~/.paddlex/official_models/`)
+- PaddleOCR 3.x 在 CPU 上模型加载 ~6s,单图识别 ~110s(生产建议 GPU)
+- 单图调试脚本:`python test-paddle-local.py <image_path>`
 
 ### 测试 Fixture 重新生成
 
-`tests/fixtures/` 收录 4 张入货通知图作为回归基准,覆盖 `BookingRecognizer` 全部支持的中文格式(空格分隔 / 斜杠标签 / 同行星号 / 大写 X 字符)。
+`tests/fixtures/` 收录 5 个不同变体的入货通知 / booking confirmation 文档,作为 `BookingRecognizer` 的回归基准。前 4 张是中文入货通知图(走 PaddleOCR),第 5 张是英文 PDF booking confirmation(自带文本层,走 pdf-parse)。
 
 ```bash
 # 全量重建(从图到 golden,~15 分钟,主要是 PaddleOCR 跑 4 张图)

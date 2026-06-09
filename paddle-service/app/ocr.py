@@ -61,6 +61,7 @@ def initialize_engine(lang: str = "ch", use_angle_cls: bool = True) -> None:
     """在应用启动时(或测试夹具)同步加载 PaddleOCR 模型。
 
     多次调用幂等;并发安全。
+    兼容 paddleocr 2.x (use_angle_cls/show_log) 与 3.x (use_textline_orientation)。
     """
     global _engine, _engine_ready, _engine_error, _engine_lang, _model_version
 
@@ -73,17 +74,40 @@ def initialize_engine(lang: str = "ch", use_angle_cls: bool = True) -> None:
             PaddleOCR = _get_paddle_ocr_class()
             logger.info("Initializing PaddleOCR lang=%s ...", target_lang)
             t0 = time.time()
-            _engine = PaddleOCR(
-                use_angle_cls=use_angle_cls,
-                lang=target_lang,
-                show_log=False,
-                use_gpu=os.environ.get("PADDLE_USE_GPU", "false").lower() == "true",
-            )
+
+            # 检测 paddleocr 主版本,2.x 和 3.x 构造参数不兼容
+            import paddleocr as _paddleocr_mod
+            paddleocr_ver = getattr(_paddleocr_mod, "__version__", "0.0.0")
+            major = int(paddleocr_ver.split(".")[0]) if paddleocr_ver and paddleocr_ver[0].isdigit() else 0
+
+            common_kwargs: dict = {"lang": target_lang}
+            if major >= 3:
+                # paddleocr 3.x: 显式锁 mobile 模型(避 doc_ori/textline_ori 的 onednn bug)
+                # 关闭 textline orientation(2.x use_angle_cls 改名)
+                common_kwargs.update({
+                    "use_textline_orientation": use_angle_cls,
+                    "use_doc_orientation_classify": False,
+                    "use_doc_unwarping": False,
+                    "text_detection_model_name": "PP-OCRv5_mobile_det",
+                    "text_recognition_model_name": "PP-OCRv5_mobile_rec",
+                })
+            else:
+                # paddleocr 2.x: 原始参数
+                common_kwargs.update({
+                    "use_angle_cls": use_angle_cls,
+                    "show_log": False,
+                    "use_gpu": os.environ.get("PADDLE_USE_GPU", "false").lower() == "true",
+                })
+
+            _engine = PaddleOCR(**common_kwargs)
             _engine_lang = target_lang
             _engine_ready = True
             _engine_error = None
-            _model_version = "PP-OCRv4"
-            logger.info("PaddleOCR ready in %.2fs", time.time() - t0)
+            _model_version = "PP-OCRv5" if major >= 3 else "PP-OCRv4"
+            logger.info(
+                "PaddleOCR %s (lib=%s) ready in %.2fs",
+                _model_version, paddleocr_ver, time.time() - t0,
+            )
         except Exception as e:  # noqa: BLE001
             _engine_ready = False
             _engine_error = str(e)
@@ -177,11 +201,23 @@ def recognize(base64_images: List[str], lang: str = "ch", merge_lines: bool = Tr
             width, height = img.size
             lines: list = []
             if hasattr(_engine, "predict"):
-                raw = _engine.predict(arr, cls=True)
+                # paddleocr 3.x predict() 不接受 cls 参数
+                try:
+                    raw = _engine.predict(arr)
+                except TypeError:
+                    # 兼容 2.x 旧 API
+                    raw = _engine.predict(arr, cls=True)
                 for page in raw:
-                    texts = page.get("rec_texts", []) if isinstance(page, dict) else []
-                    scores = page.get("rec_scores", []) if isinstance(page, dict) else []
-                    polys = page.get("rec_polys", []) if isinstance(page, dict) else []
+                    # paddleocr 2.x/3.0-3.1 predict() 返回 dict
+                    # paddleocr 3.2+ predict() 返回 OCRResult 对象,有 .json['res'] 子结构
+                    if isinstance(page, dict):
+                        res = page
+                    else:
+                        page_json = getattr(page, "json", None) or {}
+                        res = page_json.get("res", {}) if isinstance(page_json, dict) else {}
+                    texts = res.get("rec_texts", []) or []
+                    scores = res.get("rec_scores", []) or []
+                    polys = res.get("rec_polys", []) or []
                     for txt, sc, poly in zip(texts, scores, polys):
                         try:
                             poly_list = poly.tolist() if hasattr(poly, "tolist") else poly

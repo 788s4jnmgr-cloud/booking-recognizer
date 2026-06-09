@@ -27,3 +27,14 @@ uploads/_paddle_ocr_result.txt
 # 临时上传的测试图(不以 notice- 开头的是用户上传,不入库)
 uploads/test-*.png
 
+# 本地 IDE / 工具配置(个人配置,不入库)
+.obsidian/
+.omc/
+paddle-service/.omc/
+
+# 临时下载目录(原始 PDF 留底,fixture 化后不入库)
+downloads/
+
+# 一次性调试脚本(本地用,不入库)
+compare-once.js
+
