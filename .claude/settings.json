@@ -27,7 +27,8 @@
       "Bash(mkdir -p tests/fixtures/pdfs)",
       "Bash(cp downloads/multi-type-test.pdf tests/fixtures/pdfs/notice-5-mixed-types.pdf)",
       "Bash(node generate-golden-fixtures.js)",
-      "Bash(ls *.md tests/fixtures/)"
+      "Bash(ls *.md tests/fixtures/)",
+      "Bash(node -e \"const {BookingRecognizer}=require\\('./index'\\);const fs=require\\('fs'\\);const text=fs.readFileSync\\('tests/fixtures/ocr/notice-5-mixed-types.txt','utf8'\\);const r=new BookingRecognizer\\(\\);const result=r.parse\\(text\\);console.log\\('standardFormat:', r.toStandardFormat\\(result\\)\\);console.log\\('containers:', JSON.stringify\\(result.containers\\)\\);console.log\\('grossWeight:', result.grossWeight\\);\")"
     ]
   }
 }
