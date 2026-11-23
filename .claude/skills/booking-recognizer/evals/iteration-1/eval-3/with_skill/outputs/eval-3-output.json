@@ -1,0 +1,13 @@
+{
+  "eval_id": 3,
+  "prompt": "比对识别结果和标准格式：识别出 MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-2x40HC+1x20GP，标准是 MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-2x40HC+1x20GP，阈值 70%",
+  "expected_output": "返回 matched: true, similarity: 1.0",
+  "actual_output": {
+    "matched": true,
+    "similarity": 1.0
+  },
+  "recognized": "MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-2x40HC+1x20GP",
+  "standard": "MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-2x40HC+1x20GP",
+  "threshold": 0.7,
+  "status": "pass"
+}

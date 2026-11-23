@@ -2,20 +2,26 @@
 /**
  * 订舱识别 CLI 工具
  * 用法: node cli.js <文件路径>
- * 支持 PDF 和 Word (.docx) 文件
+ * 支持 PDF / Word (.docx) / PNG / JPG / JPEG 文件
  */
 
 const path = require('path');
+const fs = require('fs');
 const { BookingRecognizer } = require('./index');
 const { extractTextFromPDF, extractTextFromWord } = require('./pdf-parser');
+const { recognizeImages } = require('./paddle-client');
+
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg']);
 
 async function main() {
   const filePath = process.argv[2];
 
   if (!filePath) {
     console.log('用法: node cli.js <文件路径>');
-    console.log('示例: node cli.js "./docs/booking-note.pdf"');
-    console.log('      node cli.js "./docs/booking-note.docx"');
+    console.log('示例:');
+    console.log('  node cli.js "./docs/booking-note.pdf"');
+    console.log('  node cli.js "./docs/booking-note.docx"');
+    console.log('  node cli.js "./photos/booking.png"     (图片走 PaddleOCR + tesseract 降级)');
     process.exit(1);
   }
 
@@ -23,19 +29,51 @@ async function main() {
 
   try {
     let text;
+    let engine = 'text-extraction';
+
     if (ext === '.pdf') {
       console.log('正在解析 PDF...');
       text = await extractTextFromPDF(filePath);
-    } else if (ext === '.docx') {
+    } else if (ext === '.docx' || ext === '.doc') {
       console.log('正在解析 Word 文件...');
       text = await extractTextFromWord(filePath);
+    } else if (IMAGE_EXTS.has(ext)) {
+      console.log('正在识别图片( PaddleOCR + tesseract 降级)...');
+      if (!fs.existsSync(filePath)) {
+        console.error('文件不存在:', filePath);
+        process.exit(1);
+      }
+      const buf = fs.readFileSync(filePath);
+      if (buf.length > 50 * 1024 * 1024) {
+        console.error('文件过大(最大 50MB)');
+        process.exit(1);
+      }
+      // 简单魔数校验
+      const isPng = buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50;
+      const isJpg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+      if (!isPng && !isJpg) {
+        console.error('无效的图片格式(仅支持 PNG/JPG/JPEG)');
+        process.exit(1);
+      }
+      const result = await recognizeImages([buf.toString('base64')], {
+        lang: 'ch',
+        tesseractLang: 'eng+chi_sim',
+        merge_lines: true,
+      });
+      if (!result.success) {
+        console.error('图片识别失败:', result.error);
+        process.exit(1);
+      }
+      text = result.fullText || '';
+      engine = result.engine;
+      console.log(`(引擎: ${engine})`);
     } else {
-      console.error('不支持的文件格式，请使用 PDF 或 Word (.docx) 文件');
+      console.error('不支持的文件格式,请使用 PDF / Word (.docx/.doc) / PNG / JPG / JPEG');
       process.exit(1);
     }
 
-    console.log('\n--- 原始文本 ---');
-    console.log(text.substring(0, 500) + '...');
+    console.log('\n--- 原始文本(前 500 字符)---');
+    console.log(text.substring(0, 500) + (text.length > 500 ? '...' : ''));
 
     const recognizer = new BookingRecognizer();
     const result = recognizer.parse(text);
@@ -65,3 +103,4 @@ async function main() {
 }
 
 main();
+

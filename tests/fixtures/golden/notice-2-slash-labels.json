@@ -1,0 +1,21 @@
+{
+  "documentType": "CARGO_RECEIVING_NOTICE",
+  "blNo": "FQDAB00206",
+  "vessel": "NORTHERNMATESTIC",
+  "voyage": "25027W",
+  "portOfLoading": "QINGDAO",
+  "portOfDischarge": "BANDAR ABBAS",
+  "containers": [
+    {
+      "containerNo": null,
+      "sizeType": "40HC"
+    },
+    {
+      "containerNo": null,
+      "sizeType": "40HC"
+    }
+  ],
+  "grossWeight": 34806,
+  "etd": "2025-07-16",
+  "standardFormat": "NORTHERNMATESTIC-25027W-FQDAB00206-2-40HC"
+}

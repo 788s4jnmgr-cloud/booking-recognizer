@@ -16,6 +16,7 @@ http://localhost:3000
 | 首页信息 | GET | `/` | 查看接口列表 |
 | 解析 PDF | POST | `/parse` | 支持 URL/Base64 两种方式 |
 | 解析 URL | POST | `/parse-url` | 直接传入 PDF 下载地址 |
+| **解析图片** | POST | `/parse-image` | **PNG/JPG/JPEG 图片 OCR**（PaddleOCR + tesseract 降级） |
 | 批量解析 | POST | `/parse-batch` | 批量解析多个 PDF |
 | 模糊比对 | POST | `/compare` | 标准格式与文档比对 |
 
@@ -128,7 +129,7 @@ X-API-Key: your-api-key  # 可选，如配置了 API_KEY 则必填
 | volume | number | 体积（立方米） |
 | eta | string | 预计到达时间 |
 | freight | string | 运费：PREPAID/COLLECT |
-| standardFormat | string | 标准格式：船名-航次-提单号-箱量-箱型 |
+| standardFormat | string | 标准格式：船名-航次-提单号-箱量-箱型(混箱型时箱型部分用方括号包裹,如 `...-3-[2x40HC+1x20GP]`) |
 
 ---
 
@@ -158,7 +159,121 @@ X-API-Key: your-api-key  # 可选，如配置了 API_KEY 则必填
 
 ---
 
-## 4. 批量解析
+## 4. 解析图片
+
+直接对 PNG/JPG/JPEG 图片做 OCR 识别。引擎默认走 PaddleOCR(中文场景准确率高),不可用时自动降级到 tesseract.js,不中断服务。
+
+### 请求
+
+```bash
+POST /parse-image
+Content-Type: application/json
+X-API-Key: your-api-key  # 可选,如配置了 API_KEY 则必填
+```
+
+### 入参
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `url` | string | 否 | 图片 URL(支持 http(s):// 和 file://) |
+| `imageBase64` | string | 否 | 图片 Base64 编码(支持 `data:image/png;base64,` 前缀) |
+
+> `url` 与 `imageBase64` 二选一。
+
+### 字段
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `lang` | string | `ch` | PaddleOCR 语言(ch/en/japan/korean 等) |
+| `preprocess` | boolean | `true` | 是否在 OCR 前做去噪/二值化(由 `image-preprocessor.js`) |
+
+### URL 模式
+
+```bash
+# 远程图片
+curl -X POST http://localhost:3000/parse-image \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/booking.png"}'
+
+# 本地文件(macOS/Linux)
+curl -X POST http://localhost:3000/parse-image \
+  -H "Content-Type: application/json" \
+  -d '{"url":"file:///Users/xxx/booking.png"}'
+
+# 本地文件(Windows)
+curl -X POST http://localhost:3000/parse-image \
+  -H "Content-Type: application/json" \
+  -d '{"url":"file:///C:/Users/xxx/booking.png"}'
+```
+
+### Base64 模式
+
+```bash
+# macOS/Linux
+IMG=$(base64 -w 0 ./booking.png)
+curl -X POST http://localhost:3000/parse-image \
+  -H "Content-Type: application/json" \
+  -d "{\"imageBase64\":\"$IMG\"}"
+```
+
+```javascript
+// 浏览器 fetch + FileReader
+const file = document.getElementById('file').files[0];
+const reader = new FileReader();
+reader.onload = async () => {
+  const res = await fetch('http://localhost:3000/parse-image', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageBase64: reader.result })
+  });
+  const data = await res.json();
+  console.log(data.data.standardFormat);
+};
+reader.readAsDataURL(file);
+```
+
+### 成功响应
+
+```json
+{
+  "success": true,
+  "data": {
+    "documentType": "BOOKING_NOTE",
+    "vessel": "MAERSK SYDNEY",
+    "voyage": "624W",
+    "blNo": "HLCUSZX2606BNTH9",
+    "containers": [
+      { "sizeType": "20GP", "containerNo": null, "sealNo": null }
+    ],
+    "grossWeight": 54000,
+    "standardFormat": "MAERSK SYDNEY-624W-HLCUSZX2606BNTH9-1-20GP",
+    "ocrEngine": "paddleocr",
+    "ocrFullText": "MAERSK SYDNEY\nVoyage: 624W\n..."
+  }
+}
+```
+
+`ocrEngine` 字段取值:`paddleocr` / `tesseract.js`,反映本次调用实际使用的引擎。
+
+### 失败响应(魔数校验失败)
+
+```json
+{
+  "success": false,
+  "error": "无效的图片格式(仅支持 PNG/JPG/JPEG)"
+}
+```
+
+### 引擎降级说明
+
+- PaddleOCR 服务不可用(`ECONNREFUSED` / `ENOTFOUND` / `EAI_AGAIN` / 超时)→ 自动降级到 `tesseract.js`
+- PaddleOCR 返回 `success=false` → 自动降级
+- PaddleOCR 镜像未启动或模型未加载 → 仍可识别(只是走 tesseract)
+- 通过 `PADDLE_ENABLED=false` 环境变量可强制走 tesseract(用于本地无 Paddle 容器调试)
+
+---
+
+## 5. 批量解析
 
 最多支持 20 个/批次。
 
@@ -206,7 +321,7 @@ X-API-Key: your-api-key  # 可选，如配置了 API_KEY 则必填
 
 ---
 
-## 5. 模糊比对
+## 6. 模糊比对
 
 将标准格式字符串与文档进行比对，返回匹配结果。
 
@@ -327,6 +442,17 @@ curl -X POST -H "Content-Type: application/json" \
   -d '{"pdfBase64":"JVBERi0xLjQK..."}' \
   http://localhost:3000/parse
 
+# 解析图片(URL)
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/booking.png"}' \
+  http://localhost:3000/parse-image
+
+# 解析图片(Base64,macOS/Linux)
+IMG=$(base64 -w 0 ./booking.png)
+curl -X POST -H "Content-Type: application/json" \
+  -d "{\"imageBase64\":\"$IMG\"}" \
+  http://localhost:3000/parse-image
+
 # 模糊比对（本地文件）
 curl -X POST -H "Content-Type: application/json" \
   -d '{"combinedFormat":"GUSTAV MAERSK-622E-HLCUTA123456-2-20GP+file:///tmp/doc.pdf"}' \
@@ -413,13 +539,16 @@ print('吻合' if result['data']['matched'] else '不吻合')
 | 错误 | 说明 |
 |------|------|
 | 请提供 URL 或 base64 编码的 PDF | 未提供必要的 PDF 数据 |
+| 请提供 url 或 imageBase64 | `/parse-image` 未提供图片数据 |
 | 无效的 URL 格式 | URL 格式不正确 |
 | 禁止访问内网地址 | SSRF 防护拦截 |
 | 文件不存在 | 指定路径的文件不存在 |
-| 文件过大（最大 50MB） | PDF 超过大小限制 |
+| 文件过大（最大 50MB） | PDF/图片超过大小限制 |
 | 无效的 PDF 文件 | 文件不是有效的 PDF |
+| 无效的图片格式(仅支持 PNG/JPG/JPEG) | `/parse-image` 魔数校验失败 |
 | 下载超时（60秒） | URL 下载超时 |
 | 请求过于频繁，请稍后再试 | 速率限制触发 |
+| 图片解析失败 | PaddleOCR 与 tesseract 都识别失败 |
 
 ### 认证错误
 
@@ -444,7 +573,8 @@ print('吻合' if result['data']['matched'] else '不吻合')
 | 机制 | 说明 |
 |------|------|
 | SSRF 防护 | 禁止访问内网地址（127.x、10.x、192.168.x、localhost 等） |
-| 文件验证 | PDF 文件必须以 `%PDF` 开头，文件大小限制 50MB |
+| 文件验证 | PDF 必须以 `%PDF` 开头;图片必须以 PNG (`89 50 4E 47`) 或 JPEG (`FF D8 FF`) 魔数开头;文件大小限制 50MB |
+| 路径穿越防护 | `file://` 路径禁止 `..` 和 `%00` |
 | 速率限制 | 每 15 分钟最多 100 次请求 |
 | API Key | 可选认证，通过环境变量 `API_KEY` 配置 |
 | 错误隐藏 | 生产环境隐藏详细错误信息 |
@@ -511,4 +641,71 @@ pkill -f "node api.js" && node api.js
 
 `船名-航次-提单号-箱量-箱型尺寸`
 
-示例：`A.P.MOLLER-622W-HLCUSHA2603BWGA7-1-40HC`
+**单箱型示例**：`A.P.MOLLER-622W-HLCUSHA2603BWGA7-1-40HC`
+
+**混箱型示例**：`MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-[2x40HC+1x20GP]`
+
+> 混箱型用方括号 `[...]` 包裹多箱型摘要,`+` 分隔各箱型;`parseStandardFormat` 同时支持反向解析(混箱型时返回 `containerTypes` 数组)。
+> 箱型归一化规则:`22GP→20GP`、`45GP→40HC`、`40HQ→40HC`,详情见 [tests/fixtures/README.md](./tests/fixtures/README.md)。
+
+---
+
+## 自动放箱端点（v1.2.0 新增）
+
+这两个端点服务于「支线港放箱管理」的自动放箱：Java 港口端先调 `/parse-document` 识别订舱单,再按识别出的提单号查候选,最后调 `/match` 逐条比对。**比对规则唯一来源在 Node 侧**,Java 侧只透传字段。
+
+### `POST /parse-document`
+
+统一识别 PDF / DOCX 订舱单。扩展名与魔数**双判定**(PDF=`%PDF`,DOCX=zip `PK`),legacy `.doc`(OLE2)、图片均被拒绝。失败统一 HTTP 200 + `{success:false,error}`(与既有端点一致)。
+
+```bash
+curl -X POST http://localhost:3000/parse-document \
+  -H "Content-Type: application/json" -H "X-API-Key: your-secret-key" \
+  -d '{"base64":"<文件 base64>","fileName":"booking.pdf"}'
+```
+
+也支持 `{"url":"https://..."}`(走既有 `downloadPDF`,含 SSRF 校验;该分支固定按 PDF 处理)。
+
+响应 `data` 与 `parse()` 一致,含 `blNo / vessel / voyage / containers[] / standardFormat`。
+
+> 文本层为空的扫描版 PDF 会由 `pdf-parser.js` 自动降级 tesseract.js,准确率低于原生文本层;提单号精确相等是硬门槛,识别不准只会转为「未命中」,不会误放行。
+
+### `POST /match`
+
+```json
+{
+  "recognized": {
+    "vessel": "MUNKEBO MAERSK", "voyage": "624W",
+    "blNo": "HLCUTA12605EOHA7",
+    "containers": [{"sizeType":"40HC"},{"sizeType":"40HC"},{"sizeType":"20GP"}]
+  },
+  "candidates": [
+    {"id":123,"vessel":"MUNKEBO MAERSK","voyage":"624W","blNo":"HLCUTA12605EOHA7","containerCount":2,"containerSize":"40","containerType":"HC"}
+  ],
+  "threshold": 0.7
+}
+```
+
+申请侧箱型由 Node 侧拼装 `containerSize+containerType` 并归一化(如 `45GP→40HC`),Java 侧不拼字符串。响应:
+
+```json
+{
+  "success": true,
+  "data": {
+    "matchedIds": [123],
+    "matches": [{"id":123,"matched":true,"similarity":1,"threshold":0.7,"reason":null,"details":{}}]
+  }
+}
+```
+
+每个候选(含未命中的)都会出现在 `matches` 里,`reason` 为可读短句:`提单号不一致` / `箱型份数不足` / `船名航次相似度不足`。
+
+**与 `/compare` 的口径差异(重要)**:`/compare` 是历史契约,比较「一整份单据 vs 一个标准格式字符串」,箱量口径为 `识别总箱数 >= 申请总箱数`,行为**保持不变**;`/match` 比较「一整份单据 vs 多条按尺寸箱型分行的申请」,箱量口径为**逐类型份数**(申请侧该类型份数 <= 识别侧该类型份数)。两者不可混用。
+
+### 部署 B 相关配置
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `API_KEY` | 空 | 未配置时 `authMiddleware` 整段跳过;**生产必须配置** |
+| `RATE_LIMIT_MAX` | 100 | 每 IP 每 15 分钟请求上限;Java 服务端共用一个来源 IP,一次自动放箱触发 2 次调用,生产需调大 |
+| `PORT` | 3000 | 监听端口,`/health` 供容器探活 |

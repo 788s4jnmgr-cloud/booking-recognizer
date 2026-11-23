@@ -5,11 +5,11 @@
 ## 功能特性
 
 - **多格式支持**：
-  - 文件格式：PDF (含扫描件 OCR)、Word (.docx)
+  - 文件格式：PDF (含扫描件 OCR)、Word (.docx)、**PNG / JPG / JPEG 图片**（PaddleOCR + tesseract 降级）
   - 文档类型：订舱单（Booking Note）、提单（Bill of Lading）、海运单（Marine B/L）、Seaway Bill、Fixture Note、入货通知（Cargo Receiving Notice）
 - **字段提取**：船名、航次、提单号、箱号、箱型、毛重、体积、ETA/ETD、运费方式等
 - **入货通知格式支持**：`提单号：FQD0N00490 2*40HC`（BL号与箱量箱型写在同一行，用 `*` 分隔）
-- **标准输出**：`船名-航次-提单号-箱量-箱型尺寸`
+- **标准输出**：`船名-航次-提单号-箱量-箱型尺寸`，混箱型自动展开为 `2x40HC+1x20GP`
 - **模糊比对**：支持标准格式与识别结果的模糊比对，提单号/箱量/箱型精确匹配，船名/航次按相似度判定
 - **三种使用方式**：类库调用、CLI 工具、HTTP API 服务
 - **OCR 支持**：内置 tesseract.js，支持扫描件 PDF 识别（中英文）
@@ -62,9 +62,10 @@ console.log(recognizer.formatComparisonResult(combinedResult).formattedOutput);
 ### 2. CLI 工具
 
 ```bash
-# 支持 PDF 和 Word 文件
+# 支持 PDF / Word / 图片(PNG/JPG/JPEG)
 node cli.js ./test.pdf
 node cli.js ./test.docx
+node cli.js ./photos/booking.png    # 图片走 PaddleOCR + tesseract 降级
 ```
 
 ### 3. HTTP API 服务
@@ -86,6 +87,7 @@ API_KEY=your-secret-key node api.js
 | `/health` | GET | 健康检查 |
 | `/parse` | POST | 解析 PDF（支持 URL 或 Base64） |
 | `/parse-url` | POST | 直接解析 URL |
+| `/parse-image` | POST | **解析 PNG/JPG/JPEG 图片**（PaddleOCR + tesseract 降级） |
 | `/parse-batch` | POST | 批量解析（最多 20 个） |
 | `/compare` | POST | 模糊比对 |
 
@@ -99,10 +101,19 @@ API_KEY=your-secret-key node api.js
 船名-航次-提单号-箱量-箱型+文档
 ```
 
+**中转多船场景**：
+```
+主船-主航次-提单号-箱量-箱型+副船-副航次+文档
+```
+
 示例：
 ```
+# 单船
 GUSTAV MAERSK-622E-HLCUTA12604FTHP4-1-20GP+https://oss.example.com/doc.pdf
 GUSTAV MAERSK-622E-HLCUTA12604FTHP4-1-20GP+file:///path/to/doc.pdf
+
+# 中转 (SEASPAN PRIDE → MERKUR OCEAN)
+SEASPANPRIDE-624W-HLCUTA12605GGMT7-2-40HC+MERKUROCEAN-2630S+https://oss.example.com/doc.pdf
 ```
 
 ### 文档路径格式
@@ -175,13 +186,87 @@ booking-recognizer/
 ├── cli.js                # 命令行入口
 ├── validation.js         # 字段校验模块
 ├── image-preprocessor.js # OCR 图像预处理
-├── Dockerfile           # 容器化部署
-├── docker-compose.yml    # 服务编排
+├── paddle-client.js      # Node 端 PaddleOCR 客户端（含 tesseract 降级）
+├── paddle-service/       # PaddleOCR Python 微服务（FastAPI + PP-OCRv5）
+│   ├── app/              # main.py / ocr.py / schemas.py
+│   ├── tests/            # pytest 单元测试
+│   ├── requirements.txt
+│   └── README.md
 ├── API.md                # API 文档
 ├── README.md             # 本文档
 ├── uploads/              # 临时文件目录
-└── test*.pdf/docx        # 测试样例
+├── test*.pdf/docx        # 测试样例
+├── test-paddle-local.py  # 本地 PaddleOCR 单图测试
+├── generate-ocr-fixtures.py    # 批量生成 OCR 文本 fixture
+├── generate-golden-fixtures.js # 批量生成 BookingRecognizer golden fixture
+└── tests/fixtures/       # 入货通知 / booking confirmation OCR 测试 fixture 库
+    ├── images/                # 4 张原图(中文入货通知,走 PaddleOCR)
+    ├── pdfs/                  # 源 PDF(自带文本层,走 pdf-parse)
+    ├── ocr/                   # PaddleOCR / pdf-parse 纯文本输出
+    ├── golden/                # BookingRecognizer 结构化字段
+    └── README.md              # fixture 说明
 ```
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `PORT` | `3000` | API 服务端口 |
+| `API_KEY` | (空) | API Key 认证,未设置则跳过 |
+| `NODE_ENV` | `development` | 生产环境设为 `production` 隐藏详细错误 |
+| `PADDLE_OCR_URL` | `http://127.0.0.1:8866/ocr` | PaddleOCR 服务 URL |
+| `PADDLE_TIMEOUT_MS` | `90000` | PaddleOCR 单请求超时(毫秒) |
+| `PADDLE_ENABLED` | `true` | PaddleOCR 总开关,`false` 时直接走 tesseract |
+| `PADDLE_MAX_CONCURRENCY` | `4` | Node→Paddle 最大并发数 |
+| `OCR_ENGINE_DISABLED` | `false` | 紧急熔断(运维用,跳过 Paddle 直接 tesseract) |
+
+## PaddleOCR 部署(本地 venv)
+
+PaddleOCR 走本地 Python 虚拟环境,Node 端通过 `PADDLE_OCR_URL` HTTP 调用 Python FastAPI 服务(默认 `http://127.0.0.1:8866/ocr`)。PaddleOCR 不可用时,Node 端自动降级到 tesseract.js,不中断服务。
+
+```bash
+# 1. 创建虚拟环境(Windows / Mac / Linux 通用)
+cd paddle-service
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# Mac / Linux
+source .venv/bin/activate
+
+# 2. 装依赖(锁定的版本组合在 Windows Python 3.13 实测通过)
+pip install -r requirements.txt
+
+# 3. 启动 PaddleOCR 服务
+uvicorn app.main:app --host 0.0.0.0 --port 8866
+# 健康检查
+curl http://127.0.0.1:8866/health   # 200 表示服务在线
+curl http://127.0.0.1:8866/ready    # 200 表示模型加载完成
+
+# 4. 另开终端启动 Node API
+node api.js
+```
+
+**依赖版本**(`paddle-service/requirements.txt`):
+- `paddlepaddle==3.1.1` + `paddleocr==3.6.0`(2026-06 实测组合,无 onednn bug)
+- ⚠️ 不要升 paddlepaddle 3.3+(PIR + onednn 有 `ConvertPirAttribute2RuntimeAttribute` bug)
+- `paddle-service/app/ocr.py` 自动兼容 paddleocr 2.x(`use_angle_cls`/`show_log`)和 3.x(`use_textline_orientation`)
+
+**注意**:
+- 首次运行会从 ModelScope 下载 PP-OCRv5_mobile 模型(~166MB,缓存在 `~/.paddlex/official_models/`)
+- PaddleOCR 3.x 在 CPU 上模型加载 ~6s,单图识别 ~110s(生产建议 GPU)
+- 单图调试脚本:`python test-paddle-local.py <image_path>`
+
+### 测试 Fixture 重新生成
+
+`tests/fixtures/` 收录 5 个不同变体的入货通知 / booking confirmation 文档,作为 `BookingRecognizer` 的回归基准。前 4 张是中文入货通知图(走 PaddleOCR),第 5 张是英文 PDF booking confirmation(自带文本层,走 pdf-parse)。
+
+```bash
+# 全量重建(从图到 golden,~15 分钟,主要是 PaddleOCR 跑 4 张图)
+PADDLE_PDX_MODEL_SOURCE=modelscope python generate-ocr-fixtures.py  # 写 ocr/*.txt
+node generate-golden-fixtures.js                                    # 写 golden/*.json
+```
+
+fixture 库结构 / 字段定义 / 加新 fixture 流程:见 [tests/fixtures/README.md](./tests/fixtures/README.md)
 
 ## 安全说明
 

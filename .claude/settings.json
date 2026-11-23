@@ -1,7 +1,34 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(PADDLE_PDX_MODEL_SOURCE=modelscope PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 python test-paddle-local.py \"E:/下载/ScreenShot_2026-06-06_123749_181.png\")",
+      "Bash(cp \"E:\\\\下载\\\\ScreenShot_2026-06-06_222622_424.png\" uploads/test-4.png)",
+      "Bash(PADDLE_PDX_MODEL_SOURCE=modelscope PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 python test-paddle-local.py \"E:/下载/ScreenShot_2026-06-06_222622_424.png\")",
+      "Bash(git rm *)",
+      "Bash(set -euo pipefail)",
+      "Read(//c/Users/huawei/booking-recognizer/paddle-service/**)",
+      "Bash(py -3.10 --version)",
+      "Bash(python3.10 --version)",
+      "Bash(py -0)",
+      "Bash(where python:*)",
+      "Bash(where py:*)",
+      "Read(//c/Users/huawei/.paddlex/official_models//**)",
+      "Bash(du -sh /c/Users/huawei/.paddlex/official_models/*)",
+      "Bash(taskkill /F /IM pip.exe)",
+      "Bash(tasklist)",
+      "Bash(tasklist /v)",
+      "Read(//c/Users/huawei/AppData/Local/pip/cache/**)",
+      "Read(//c/Users/huawei/booking-recognizer/**)",
+      "Bash(python -c \"import base64; print\\(base64.b64encode\\(open\\('paddle-service/tests/fixtures/images/notice-1-space-separated.png','rb'\\).read\\(\\)\\).decode\\(\\)\\)\")",
+      "Bash(python -c \"import sys, json; d=json.load\\(sys.stdin\\); r=d['results'][0]; print\\('engine:', r['engine']\\); print\\('latency_ms:', r['latency_ms']\\); print\\('lines count:', len\\(r['lines']\\)\\); print\\('first 3 lines:'\\); [print\\(f'  {l[\\\\\"text\\\\\"]!r} conf={l[\\\\\"confidence\\\\\"]:.2f}'\\) for l in r['lines'][:3]]; print\\('---full_text \\(first 200\\)---'\\); print\\(r['full_text'][:200]\\)\")",
+      "Bash(python -c ':*)",
+      "Bash(node -e ':*)",
+      "Bash(mkdir -p tests/fixtures/pdfs)",
+      "Bash(cp downloads/multi-type-test.pdf tests/fixtures/pdfs/notice-5-mixed-types.pdf)",
+      "Bash(node generate-golden-fixtures.js)",
+      "Bash(ls *.md tests/fixtures/)",
+      "Bash(node -e \"const {BookingRecognizer}=require\\('./index'\\);const fs=require\\('fs'\\);const text=fs.readFileSync\\('tests/fixtures/ocr/notice-5-mixed-types.txt','utf8'\\);const r=new BookingRecognizer\\(\\);const result=r.parse\\(text\\);console.log\\('standardFormat:', r.toStandardFormat\\(result\\)\\);console.log\\('containers:', JSON.stringify\\(result.containers\\)\\);console.log\\('grossWeight:', result.grossWeight\\);\")"
     ]
   }
 }

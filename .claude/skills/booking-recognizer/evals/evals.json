@@ -1,0 +1,23 @@
+{
+  "skill_name": "booking-assistant",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "解析 test.pdf，返回船名-航次-提单号-箱量-箱型格式",
+      "expected_output": "输出格式: 船名-航次-提单号-箱量-箱型，如 MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-2x40HC+1x20GP",
+      "files": ["test.pdf"]
+    },
+    {
+      "id": 2,
+      "prompt": "我有一张入货通知的图片，能帮我识别里面的船名航次、提单号和箱型箱量吗？图片在 uploads/ 目录下",
+      "expected_output": "返回结构化字段: vessel, voyage, blNo, containers[] 含 sizeType",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "比对识别结果和标准格式：识别出 MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-2x40HC+1x20GP，标准是 MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-2x40HC+1x20GP，阈值 70%",
+      "expected_output": "返回 matched: true, similarity: 1.0",
+      "files": []
+    }
+  ]
+}

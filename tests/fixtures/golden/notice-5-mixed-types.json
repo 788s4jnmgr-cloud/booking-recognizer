@@ -1,0 +1,25 @@
+{
+  "documentType": "BILL_OF_LADING",
+  "blNo": "HLCUTA12605EOHA7",
+  "vessel": "MUNKEBO MAERSK",
+  "voyage": "624W",
+  "portOfLoading": null,
+  "portOfDischarge": null,
+  "containers": [
+    {
+      "sizeType": "40HC",
+      "containerNo": null
+    },
+    {
+      "sizeType": "20GP",
+      "containerNo": null
+    },
+    {
+      "sizeType": "40HC",
+      "containerNo": null
+    }
+  ],
+  "grossWeight": 27280,
+  "etd": null,
+  "standardFormat": "MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-[2x40HC+1x20GP]"
+}

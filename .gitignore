@@ -1,5 +1,43 @@
 node_modules/
-uploads/*.pdf
+uploads/*
+!uploads/.gitkeep
 .env
 *.log
 .trae/
+
+# Claude Code 本地配置(不提交)
+.claude/settings.local.json
+.claude/projects/
+.claude/sessions/
+
+# PaddleOCR Python 微服务
+paddle-service/__pycache__/
+paddle-service/**/__pycache__/
+paddle-service/.pytest_cache/
+paddle-service/.venv/
+paddle-service/venv/
+paddle-service/*.egg-info/
+paddle-service/.coverage
+paddle-service/htmlcov/
+paddle-models/
+
+# 临时 OCR 文本(generate-ocr-fixtures.py 会重新生成)
+uploads/_paddle_ocr_result.txt
+
+# 临时上传的测试图(不以 notice- 开头的是用户上传,不入库)
+uploads/test-*.png
+
+# 本地 IDE / 工具配置(个人配置,不入库)
+.obsidian/
+.omc/
+paddle-service/.omc/
+
+# 临时下载目录(原始 PDF 留底,fixture 化后不入库)
+downloads/
+
+# 一次性调试脚本(本地用,不入库)
+compare-once.js
+
+# npm pack 产物(构建输出,不入库)
+*.tgz
+

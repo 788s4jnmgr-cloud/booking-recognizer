@@ -106,6 +106,40 @@ function isValidPDF(buffer) {
   }
 }
 
+/**
+ * 验证图片文件签名(魔数),返回 { valid, format, reason }。
+ * 支持: PNG / JPG / JPEG
+ */
+function isValidImage(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) {
+    return { valid: false, reason: '文件太小' };
+  }
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 && buffer[1] === 0x50 &&
+    buffer[2] === 0x4e && buffer[3] === 0x47 &&
+    buffer[4] === 0x0d && buffer[5] === 0x0a &&
+    buffer[6] === 0x1a && buffer[7] === 0x0a
+  ) {
+    return { valid: true, format: 'png' };
+  }
+  // JPEG: FF D8 FF (后跟 E0/E1/DB/E2 等)
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { valid: true, format: 'jpg' };
+  }
+  return { valid: false, reason: '无效的图片格式(仅支持 PNG/JPG/JPEG)' };
+}
+
+/**
+ * 从 Buffer 中提取图片魔数对应的扩展名(若无法识别,默认为 png)
+ */
+function detectImageExt(buffer) {
+  const v = isValidImage(buffer);
+  if (v.valid) return v.format === 'jpg' ? 'jpg' : 'png';
+  return 'png';
+}
+
 // ============================================
 // 认证中间件（如果配置了 API_KEY）
 // ============================================
@@ -135,7 +169,7 @@ function authMiddleware(req, res, next) {
 
 const rateLimitMap = new Map();
 const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15分钟
-const RATE_LIMIT_MAX = 100; // 最多100次
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '100', 10); // 最多100次/15分钟（部署 B 可用环境变量调大）
 const RATE_LIMIT_MAP_MAX = 10000; // Map 条目上限，防止 DDoS 导致内存泄漏
 
 function rateLimitMiddleware(req, res, next) {
@@ -213,12 +247,96 @@ async function parseDocument(filePath) {
 }
 
 /**
- * 从 URL 下载 PDF（安全版本）
+ * 在 parseDocument 结果上附加 combinedFormat（标准格式 + 来源 URL）。
+ * 用于追溯 PDF 来源到结构化记录。
+ *
+ * 单船场景: <vessel>-<voyage>-<blNo>-<count>-<sizeType>+<URL>
+ * 中转场景: <vessel>-<voyage>-<blNo>-<count>-<sizeType>+<vessel2>-<voyage2>+<URL>
+ * 混箱型场景: <vessel>-<voyage>-<blNo>-<count>-<sizeType1>+<sizeType2>...+<URL>
+ */
+function attachCombinedFormat(result, sourceUrl) {
+  if (!result || !sourceUrl) return result;
+  if (!result.standardFormat) return result;
+
+  let middle = result.standardFormat;
+
+  // 副船追加: <标准格式>+<副船>-<副航次>
+  if (result.secondVessel && result.secondVoyage) {
+    middle = `${middle}+${result.secondVessel}-${result.secondVoyage}`;
+  }
+
+  result.combinedFormat = `${middle}+${sourceUrl}`;
+  return result;
+}
+
+/**
+ * 解析图片 Buffer 并返回结构化结果(走 PaddleOCR + tesseract 降级)。
+ *
+ * @param {Buffer} imageBuffer - PNG/JPG 图片 buffer
+ * @param {object} [opts] - { lang, preprocess, tesseractLang }
+ */
+async function parseImage(imageBuffer, opts = {}) {
+  const { recognizeImages } = require('./paddle-client');
+
+  // 1. 可选预处理(@napi-rs/canvas + image-preprocessor)
+  let processed = imageBuffer;
+  if (opts.preprocess !== false) {
+    try {
+      // eslint-disable-next-line global-require
+      const pre = require('./image-preprocessor');
+      if (pre && typeof pre.preprocessImage === 'function' && pre.PREPROCESSING_ENABLED) {
+        const { imageBufferToRGBA } = require('./paddle-client');
+        const rgba = imageBufferToRGBA(imageBuffer);
+        if (rgba) {
+          const result = pre.preprocessImage(rgba.data, rgba.width, rgba.height);
+          // preprocessImage 返回 { data, width, height } 或直接 buffer
+          if (result && result.data) {
+            // 重新编码为 PNG buffer
+            const { createCanvas } = require('@napi-rs/canvas');
+            const canvas = createCanvas(result.width, result.height);
+            const ctx = canvas.getContext('2d');
+            const imageData = ctx.createImageData(result.width, result.height);
+            imageData.data.set(result.data);
+            ctx.putImageData(imageData, 0, 0);
+            processed = canvas.toBuffer('image/png');
+          }
+        }
+      }
+    } catch (e) {
+      // 预处理失败 → 静默使用原图
+    }
+  }
+
+  // 2. OCR(自动降级)
+  const base64 = processed.toString('base64');
+  const ocrResult = await recognizeImages([base64], {
+    lang: opts.lang || 'ch',
+    tesseractLang: opts.tesseractLang || 'eng+chi_sim',
+    merge_lines: true,
+  });
+
+  if (!ocrResult || !ocrResult.success) {
+    throw new Error(ocrResult && ocrResult.error ? ocrResult.error : '图片识别失败');
+  }
+
+  // 3. 复用现有识别器解析文本
+  const text = ocrResult.fullText || '';
+  const recognizer = new BookingRecognizer();
+  const result = recognizer.parse(text);
+  result.standardFormat = recognizer.toStandardFormat(result);
+  result.ocrEngine = ocrResult.engine;
+  result.ocrFullText = text;
+  return result;
+}
+
+/**
+ * 从 URL 下载 PDF（安全版本，带重试；优先用本机 curl 绕过 CDN 的 Node TLS 指纹检测）
  */
 async function downloadPDF(url) {
   const https = require('https');
   const http = require('http');
   const urlModule = require('url');
+  const { execFile } = require('child_process');
 
   // 验证 URL
   const validation = isValidUrl(url);
@@ -226,16 +344,84 @@ async function downloadPDF(url) {
     throw new Error(`URL 验证失败: ${validation.reason}`);
   }
 
+  const fileName = path.join(uploadsDir, `${Date.now()}_${Math.random().toString(36).substring(7)}.pdf`);
+
+  const MAX_RETRIES = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      // 优先用 curl：避免 Node https.get 的 JA3 指纹被反爬
+      return await downloadViaCurl(url, fileName, execFile);
+    } catch (curlErr) {
+      // curl 不在 / 没下载成功时,回退到 Node https
+      console.warn(`[downloadPDF] curl attempt ${attempt} failed: ${curlErr.message}; falling back to https`);
+      try {
+        return await downloadPDFOnce(url, { https, http, urlModule }, fileName);
+      } catch (nodeErr) {
+        lastErr = nodeErr;
+        const transient = /socket hang up|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|aborted/i.test(nodeErr.message);
+        if (!transient || attempt === MAX_RETRIES) throw nodeErr;
+        const delay = 500 * Math.pow(2, attempt - 1);
+        console.warn(`[downloadPDF] attempt ${attempt}/${MAX_RETRIES} failed: ${nodeErr.message}; retrying in ${delay}ms`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+function downloadViaCurl(url, fileName, execFile) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-sSL',                  // silent + follow redirects
+      '--max-time', '60',
+      '--max-filesize', '52428800', // 50MB
+      '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      '-H', 'Accept: application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
+      '-o', fileName,
+      url,
+    ];
+    execFile('curl', args, { windowsHide: true }, (err, _stdout, stderr) => {
+      if (err) {
+        try { fs.unlinkSync(fileName); } catch {}
+        return reject(new Error(`curl ${err.code || 'failed'}: ${(stderr || err.message).trim().slice(0, 200)}`));
+      }
+      // 验证下载到的是 PDF
+      if (!fs.existsSync(fileName) || fs.statSync(fileName).size < 100) {
+        try { fs.unlinkSync(fileName); } catch {}
+        return reject(new Error('curl 下载后文件不存在或过小'));
+      }
+      const fd = fs.openSync(fileName, 'r');
+      const buf = Buffer.alloc(5);
+      fs.readSync(fd, buf, 0, 5, 0);
+      fs.closeSync(fd);
+      if (!(buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46)) { // %PDF
+        try { fs.unlinkSync(fileName); } catch {}
+        return reject(new Error('curl 下载内容不是 PDF (%PDF magic 缺失)'));
+      }
+      resolve(fileName);
+    });
+  });
+}
+
+function downloadPDFOnce(url, { https, http, urlModule }, fileName) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new urlModule.URL(url);
     const protocol = parsedUrl.protocol === 'https:' ? https : http;
 
-    const fileName = path.join(uploadsDir, `${Date.now()}_${Math.random().toString(36).substring(7)}.pdf`);
     const file = fs.createWriteStream(fileName);
     let downloadedSize = 0;
     const MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024; // 50MB
 
-    const request = protocol.get(url, (response) => {
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/pdf,application/octet-stream;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      'Accept-Encoding': 'identity',
+      'Connection': 'keep-alive',
+    };
+
+    const request = protocol.get(url, { headers }, (response) => {
       // 处理重定向
       if (response.statusCode === 301 || response.statusCode === 302) {
         const redirectUrl = response.headers.location;
@@ -323,6 +509,132 @@ function safeUnlink(filePath) {
 // ============================================
 
 // 健康检查（无需认证）
+// ============================================
+// 自动放箱：统一文档识别 + 结构化比对（本期新增，不改动既有端点）
+// ============================================
+
+/**
+ * POST /parse-document —— 统一识别 PDF / DOCX 订舱单。
+ * body: { base64, fileName } 或 { url }；扩展名 + 魔数双判定，legacy .doc(OLE2) 被拒。
+ */
+app.post('/parse-document', authMiddleware, rateLimitMiddleware, async (req, res) => {
+  let filePath = null;
+  try {
+    const { base64, fileName, url } = req.body;
+    if (!base64 && !url) {
+      return res.status(200).json({ success: false, error: '请提供 base64 或 url' });
+    }
+
+    let buffer;
+    let sourceName = fileName || 'booking.pdf';
+
+    if (base64) {
+      if (base64.length > 70 * 1024 * 1024) {
+        return res.status(200).json({ success: false, error: '请求数据过大' });
+      }
+      try {
+        buffer = Buffer.from(base64, 'base64');
+      } catch {
+        return res.status(200).json({ success: false, error: '无效的 Base64 编码' });
+      }
+    } else {
+      const validation = isValidUrl(url);
+      if (!validation.valid) {
+        return res.status(200).json({ success: false, error: validation.reason });
+      }
+      filePath = await downloadPDF(url);
+      buffer = fs.readFileSync(filePath);
+      sourceName = path.basename(filePath);
+    }
+
+    const ext = path.extname(sourceName).toLowerCase();
+    if (ext !== '.pdf' && ext !== '.docx') {
+      if (filePath) safeUnlink(filePath);
+      return res.status(200).json({ success: false, error: '仅支持 PDF 或 DOCX 订舱单（不支持图片、legacy .doc）' });
+    }
+    if (ext === '.pdf' && !isValidPDF(buffer)) {
+      if (filePath) safeUnlink(filePath);
+      return res.status(200).json({ success: false, error: '无效的 PDF 文件' });
+    }
+    if (ext === '.docx' && buffer.slice(0, 2).toString('ascii') !== 'PK') {
+      if (filePath) safeUnlink(filePath);
+      return res.status(200).json({ success: false, error: '无效的 DOCX 文件' });
+    }
+    if (buffer.length > 50 * 1024 * 1024) {
+      if (filePath) safeUnlink(filePath);
+      return res.status(200).json({ success: false, error: '文件过大（最大 50MB）' });
+    }
+
+    if (!filePath) {
+      const safeName = `${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`;
+      filePath = path.join(uploadsDir, safeName);
+      fs.writeFileSync(filePath, buffer);
+    }
+
+    const { extractTextFromPDF, extractTextFromWord } = require('./pdf-parser');
+    const text = ext === '.docx'
+      ? await extractTextFromWord(filePath)
+      : await extractTextFromPDF(filePath);
+
+    const recognizer = new BookingRecognizer();
+    const result = recognizer.parse(text);
+    result.standardFormat = recognizer.toStandardFormat(result);
+
+    if (filePath) safeUnlink(filePath);
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    if (filePath) safeUnlink(filePath);
+    console.error('parse-document 解析错误:', error);
+    return res.status(200).json({
+      success: false,
+      error: '解析失败',
+      message: process.env.NODE_ENV === 'production' ? '解析失败' : error.message
+    });
+  }
+});
+
+/**
+ * POST /match —— 识别结果 × 候选放箱申请，逐条结构化比对。
+ * 规则唯一来源在 Node 侧（compareWithExpected），Java 侧只透传字段。
+ * body: { recognized, candidates: [{ id, vessel, voyage, blNo, containerCount, containerSize, containerType }], threshold? }
+ */
+app.post('/match', authMiddleware, rateLimitMiddleware, (req, res) => {
+  try {
+    const { recognized, candidates, threshold } = req.body;
+    if (!recognized || typeof recognized !== 'object') {
+      return res.status(200).json({ success: false, error: '请提供 recognized' });
+    }
+    if (!Array.isArray(candidates)) {
+      return res.status(200).json({ success: false, error: 'candidates 必须是数组' });
+    }
+
+    const recognizer = new BookingRecognizer();
+    const t = typeof threshold === 'number' ? threshold : 0.7;
+    const matches = candidates.map(c => {
+      const r = recognizer.compareWithExpected(recognized, c, t);
+      return {
+        id: c.id,
+        matched: r.matched,
+        similarity: r.similarity,
+        threshold: r.threshold,
+        reason: r.reason,
+        details: r.details
+      };
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        matchedIds: matches.filter(m => m.matched).map(m => m.id),
+        matches
+      }
+    });
+  } catch (error) {
+    console.error('match 比对错误:', error);
+    return res.status(200).json({ success: false, error: '比对失败', message: error.message });
+  }
+});
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'booking-recognizer-api' });
 });
@@ -339,7 +651,9 @@ app.get('/', (req, res) => {
     endpoints: {
       'POST /parse': '解析 PDF 文件或 URL',
       'GET /health': '健康检查',
-      'POST /parse-url': '直接解析 URL'
+      'POST /parse-url': '直接解析 URL',
+      'POST /parse-image': '解析 PNG/JPG/JPEG 图片(PaddleOCR + tesseract 降级)',
+      'POST /compare': '模糊比对(标准格式 vs 识别结果)'
     }
   });
 });
@@ -413,6 +727,7 @@ app.post('/parse', authMiddleware, rateLimitMiddleware, async (req, res) => {
 
     // 清理临时文件
     safeUnlink(pdfPath);
+
 
     res.json({
       success: true,
@@ -633,6 +948,113 @@ app.post('/compare', authMiddleware, rateLimitMiddleware, async (req, res) => {
   }
 });
 
+// 解析图片:支持 URL / file:// / imageBase64(需要认证,有限流)
+app.post('/parse-image', authMiddleware, rateLimitMiddleware, async (req, res) => {
+  let imagePath = null;
+
+  try {
+    const { url, imageBase64 } = req.body || {};
+
+    if (!url && !imageBase64) {
+      return res.status(200).json({
+        success: false,
+        error: '请提供 url 或 imageBase64'
+      });
+    }
+
+    let imageBuffer = null;
+
+    // 方式 1:URL 下载(包括 file://)
+    if (url) {
+      if (url.startsWith('file://')) {
+        // 本地文件(file:// 模式,与 /parse-url 同样的安全处理)
+        imagePath = url.replace('file://', '');
+        if (!imagePath.startsWith('/') && !imagePath.match(/^[A-Za-z]:/)) {
+          imagePath = '/' + imagePath;
+        }
+        if (imagePath.includes('..') || imagePath.includes('%00')) {
+          return res.status(200).json({ success: false, error: '无效的文件路径' });
+        }
+        if (!fs.existsSync(imagePath)) {
+          return res.status(200).json({ success: false, error: '文件不存在: ' + imagePath });
+        }
+        imageBuffer = fs.readFileSync(imagePath);
+      } else {
+        // HTTP/HTTPS 下载:复用 downloadPDF 但允许任意扩展名
+        const validation = isValidUrl(url);
+        if (!validation.valid) {
+          return res.status(200).json({ success: false, error: validation.reason });
+        }
+        // 复用 downloadPDF(限 50MB, 60s 超时,重定向 SSRF 防护)
+        imagePath = await downloadPDF(url);
+        imageBuffer = fs.readFileSync(imagePath);
+      }
+    }
+    // 方式 2:imageBase64
+    else if (imageBase64) {
+      // 剥离 data:image/png;base64, 前缀
+      let b64 = imageBase64;
+      if (b64.startsWith('data:') && b64.includes(',')) {
+        b64 = b64.substring(b64.indexOf(',') + 1);
+      }
+      // 大小预检(50MB 图片的 base64 约 70MB)
+      const maxBase64Size = 70 * 1024 * 1024;
+      if (b64.length > maxBase64Size) {
+        return res.status(200).json({ success: false, error: '请求数据过大' });
+      }
+      try {
+        imageBuffer = Buffer.from(b64, 'base64');
+      } catch {
+        return res.status(200).json({ success: false, error: '无效的 Base64 编码' });
+      }
+    }
+
+    if (!imageBuffer) {
+      return res.status(200).json({ success: false, error: '未获取到图片内容' });
+    }
+
+    // 文件大小校验
+    if (imageBuffer.length > 50 * 1024 * 1024) {
+      return res.status(200).json({ success: false, error: '文件过大(最大 50MB)' });
+    }
+
+    // 魔数校验
+    const imgCheck = isValidImage(imageBuffer);
+    if (!imgCheck.valid) {
+      return res.status(200).json({ success: false, error: imgCheck.reason });
+    }
+
+    // 调用 parseImage(PaddleOCR + tesseract 降级 + 预处理)
+    const result = await parseImage(imageBuffer, {
+      lang: (req.body && req.body.lang) || 'ch',
+      preprocess: req.body && req.body.preprocess !== false,
+    });
+
+    // 清理临时文件
+    safeUnlink(imagePath);
+
+
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    safeUnlink(imagePath);
+    console.error('图片解析错误:', error);
+
+    const errorMessage = process.env.NODE_ENV === 'production'
+      ? '图片解析失败'
+      : error.message;
+
+    res.status(200).json({
+      success: false,
+      error: '图片解析失败',
+      message: errorMessage
+    });
+  }
+});
+
 // 404 处理
 app.use((req, res) => {
   res.status(404).json({ error: '接口不存在' });
@@ -680,6 +1102,11 @@ app.listen(PORT, () => {
 ║                                                            ║
 ║  POST /parse-url - 直接解析 URL                             ║
 ║    - Body: { url: "PDF_URL" }                               ║
+║                                                            ║
+║  POST /parse-image - 解析 PNG/JPG/JPEG 图片                 ║
+║    - URL:    { url: "https://.../booking.png" }             ║
+║    - Base64: { imageBase64: "iVBORw0K..." }                 ║
+║    - 引擎:   PaddleOCR(主) + tesseract.js(降级)             ║
 ║                                                            ║
 ╚══════════════════════════════════════════════════════════════╝
 

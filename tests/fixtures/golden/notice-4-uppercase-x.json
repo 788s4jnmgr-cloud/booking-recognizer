@@ -1,0 +1,17 @@
+{
+  "documentType": "CARGO_RECEIVING_NOTICE",
+  "blNo": "FQDON00524",
+  "vessel": "RACINE",
+  "voyage": "26007W",
+  "portOfLoading": null,
+  "portOfDischarge": "BANDARABBAS",
+  "containers": [
+    {
+      "containerNo": null,
+      "sizeType": "40HC"
+    }
+  ],
+  "grossWeight": null,
+  "etd": null,
+  "standardFormat": "RACINE-26007W-FQDON00524-1-40HC"
+}

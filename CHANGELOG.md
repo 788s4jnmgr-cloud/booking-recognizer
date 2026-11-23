@@ -1,5 +1,147 @@
 # Changelog
 
+## [1.2.0] - 2026-11-10
+
+### Added
+- **自动放箱端点**:新增 `POST /parse-document`(PDF/DOCX 统一识别,扩展名+魔数双判定)与 `POST /match`(识别结果 × 候选申请逐条结构化比对),均挂 `authMiddleware + rateLimitMiddleware`,不改动既有 `/parse`、`/compare` 等端点的对外行为
+- **`BookingRecognizer.normalizeBlNo`**:提单号归一化(全角转半角、去空白、去各类连字符、转大写),供 `/match` 与 `compareWithExpected` 使用;规则权威只在 Node 一侧
+- **`BookingRecognizer.compareWithExpected`**:结构化比对,箱量按**逐类型份数**判定(申请侧该类型份数 <= 识别侧该类型份数),申请侧箱型同步归一化(`45GP→40HC`),提单号归一化后精确相等为硬门槛
+- **`RATE_LIMIT_MAX` 改为环境变量可配**(默认 100),便于独立容器部署时按实际并发调整
+- `API.md` 补两个新端点、与 `/compare` 的口径差异、部署 B 相关配置说明
+
+### 验证
+- 本机 22 条断言全通过:归一化、D5 混箱多行全部命中、D8 逐类型份数、D9 提单号归一化、D10 申请侧归一化、`fuzzyCompare` 行为不变;真实 Hapag-Lloyd 订舱确认 PDF 端到端识别 `HLCUTA12605EOHA7 / MUNKEBO MAERSK / 624W / 3-[2x40HC+1x20GP]`;`/parse-document` 与 `/match` HTTP 端到端通过
+
+## [1.1.6] - 2026-06-09
+
+### Added
+- **混箱型测试 fixture #5 (notice-5-mixed-types)**: 新增英文 PDF booking confirmation 回归基准(Hapag-Lloyd / MUNKEBO MAERSK-624W / 3 箱混装 `2x40HC+1x20GP`)
+  - `tests/fixtures/pdfs/notice-5-mixed-types.pdf` (88KB,自带文本层)
+  - `tests/fixtures/ocr/notice-5-mixed-types.txt` (pdf-parse 抽取)
+  - `tests/fixtures/golden/notice-5-mixed-types.json` (BookingRecognizer 期望输出)
+- **PDF fixture 工作流**: 文档自带文本层时,`pdf-parse` 直接抽文本,不依赖 PaddleOCR(`generate-golden-fixtures.js` 通用,自动适配 ocr/*.txt 来源)
+- **PaddleOCR 2.x / 3.x 双版本兼容**(`paddle-service/app/ocr.py`):
+  - 自动检测 `paddleocr.__version__`,2.x 用 `use_angle_cls`/`show_log`/`use_gpu`,3.x 用 `use_textline_orientation` + 显式锁 `PP-OCRv5_mobile_det/rec` 模型
+  - 3.x predict() 兼容 2.x 旧 API(`TypeError` 兜底回退)和 3.2+ 新 `OCRResult` 对象(`getattr(page, "json", {}).get("res")`)
+- **模糊比对箱型/箱量子集匹配**: 识别结果包含期望字段的全部箱型即判定通过;箱量 `actual >= expected` 即可(`识别多算 OK,少算 fail`)
+  - `formatContainerSummary` 混箱型输出加方括号 `2x40HC+1x20GP` → `[2x40HC+1x20GP]`
+  - `parseStandardFormat` 兼容半角 `[]`、全角 `【】`、半角 `()`、全角 `（）` 四种括号
+  - `formatComparisonResult` 错误消息区分「箱量不足」「箱型缺失」两类原因
+
+### Changed
+- **依赖锁定** `paddle-service/requirements.txt`:
+  - `paddlepaddle 2.6.1` + `paddleocr 2.7.3` → `paddlepaddle 3.1.1` + `paddleocr 3.6.0`
+  - 备注:不要升 paddlepaddle 3.3+ (PIR + onednn 有 `ConvertPirAttribute2RuntimeAttribute` bug)
+- **移除** `api.js` 中 `attachCombinedFormat()` 的 3 处自动注入调用(`/parse` / `/parse-url` / `/parse-image` 端点);函数保留供 `/compare` 内部使用
+- **README.md**: 移除所有 Docker 部署说明(Dockerfile / docker-compose.yml / `docker compose up` 命令),改写为本地 Python venv 部署(`python -m venv .venv` + `uvicorn`)
+
+### Tested
+- **5 个 fixture 端到端回归**: notice-1~4 (PaddleOCR 3.6.0 + 修复后 BookingRecognizer) + notice-5 (pdf-parse + 修复后 BookingRecognizer),全部通过
+- **notice-5 实际输出**:
+  - `MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-[2x40HC+1x20GP]` (containers=3, grossWeight=27280) ✅
+  - 旧版会漏抽 2 箱(`2x45GP,1x22GP` 只命中 `1x22GP`)并漏副船信息
+
+## [1.1.5] - 2026-06-07
+
+### Fixed
+- **船名误识别 (vessel_name_misrecognition)**: 旧版 `i` 标志导致 `[A-Z]` 匹配到正文小写 "vessel"，抓到"schedule you initially requested may have changed..." 等英文句子作为船名。修复: 改用 `Voy. No` 锚点反向查找策略，找锚点前 400 字符内"全大写多词行"，并用黑名单过滤模板标签 (VESSEL/DP VOYAGE/IMO NO/CALL SIGN/FLAG)、港口名 (QINGDAO/ROTTERDAM/APM2 等) 和机构 (HAPAG-LLOYD/KUEHNE & NAGEL)。
+- **箱量冲突 (summary_detail_conflict)**: 旧版 `boxCountRegex2` 备选不包含 `45GP`，导致 `2x45GP,1x22GP` 只命中 `1x22GP` 得 1 箱；且当 PDF 摘要"1x45GP"与明细"145GP/245GP"冲突时优先取了摘要。修复: (1) 通用箱型模式 `(?:20|22|40|45)(?:GP|HC|RF|OT|FR|HQ)` 覆盖所有内部叫法; (2) `extractHLCFields` 优先解析明细列表 (HIGH CUBE CONT. / GENERAL PURPOSE CONT. / REEFER CONT. 等)，按出现顺序展开; 摘要仅作 fallback。
+- **毛重欧式格式错算 (gross_weight_european_format)**: 旧版 `parseFloat("10860,0".replace(/,/g, ''))` 把欧式小数 "10860,0" 当 thousands 分隔符错算为 108600。修复: 新增 `parseLocalizedNumber()` 智能识别欧式 (1.234,56) vs 美式 (1,234.56) 数字格式; 并新增 `computeGrossWeight()` 优先 Σ 各箱 "Gross Weight: X KGM" 明细求和。
+- **明细描述丢空格容差**: 新正则 `[\d'"]+` 兼容 `40'X8'X9'6"HIGHCUBECONT.` (无空格) 和 `40' X 8' X 9'6" HIGH CUBE CONT.` (有空格) 两种 PDF 解析结果。
+
+### Added
+- **中转多船支持 (transshipment_2nd_vessel)**: 提取副船名+副航次 (从第二个 `Voy. No` 锚点反向查找)，用于 SEASPAN PRIDE → MERKUR OCEAN 这种 QINGDAO→TANGER MED→APAPA 的转船场景。combinedFormat 改为 `主船-主航次-提单号-箱量-箱型+副船-副航次+URL`。
+- **混箱型 format()**: 单箱型输出 "3-40HC" (向后兼容)，混箱型输出 "3-2x40HC+1x20GP" (按出现顺序拼接)。`parseStandardFormat` 同时支持解析两种格式 (新增 `containerTypes` 数组字段)。
+- **`parseLocalizedNumber()`**: 欧/美式数字格式自动识别 (`10860,0` / `10,860.50` / `10.860,50` 都能正确解析)。
+- **`findVesselNameByVoyNoAnchor()`**: 通用船名反向查找工具，可被其他文档类型复用。
+- **`sizeTypeFromDetail()`**: 从明细描述 (HIGH CUBE / GENERAL PURPOSE / REEFER 等) + 长度推导箱型。
+- **`formatContainerSummary()`**: 箱型摘要统一方法，单一/混合箱型自动判断。
+
+### Tested
+- **MUNKEBO MAERSK (1780623688152.PDF) 端到端回归**:
+  - 旧: `MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-1-20GP` (containers=1, grossWeight=160140)
+  - 新: `MUNKEBO MAERSK-624W-HLCUTA12605EOHA7-3-2x40HC+1x20GP` (containers=3, grossWeight=27280) ✅
+- **SEASPAN PRIDE (1780552096445.pdf) 端到端回归**:
+  - 旧: `scheduleyouinitiallyrequestedmayhavechanged.Please-624W-HLCUTA12605GGMT7-1-40HC` (船名错, 漏 1 箱, 漏副船)
+  - 新: `SEASPANPRIDE-624W-HLCUTA12605GGMT7-2-40HC+MERKUROCEAN-2630S+<URL>` ✅
+- **训练样本**: `outputs/booking-corrections/2026-06-07.csv` 升级 schema (新增 `deviation_type` 列)，新增 SEASPAN PRIDE / gross_weight_european_format / transshipment_2nd_vessel 三类共 4 条偏差样本。
+
+## [1.1.4] - 2026-06-06
+
+### Added
+- **入货通知测试 fixture 库**:`tests/fixtures/` 收录 4 张不同变体的入货通知图,覆盖 `BookingRecognizer` 全部支持的中文入货通知格式
+  - `images/`: 4 张原图(28~46KB PNG,中文入货通知样本)
+  - `ocr/`: PaddleOCR 输出的纯文本 fixture(每行一个识别行)
+  - `golden/`: BookingRecognizer 抽出的结构化字段 fixture(去 rawText)
+  - `README.md`: 目录结构、4 张图变体说明、字段定义、重新生成步骤
+- **fixture 生成脚本**(根目录):
+  - `generate-ocr-fixtures.py` — 批量跑 PaddleOCR(~10 分钟,4 张图)
+  - `generate-golden-fixtures.js` — 批量跑 BookingRecognizer 抽字段(秒级)
+- **诊断工具**:`parse-text.js` — 从任意 OCR 文本手动抽字段并打印(JSON + 标准格式),便于调正则
+- **本地 PaddleOCR 调试工具**:`test-paddle-local.py` — 跑 PaddleOCR 识别单图,带置信度逐行打印
+
+### Changed
+- `.gitignore` 排除 Claude Code 本地配置(`.claude/settings.local.json` 等) + OCR 临时文件 + 用户测试图(`uploads/test-*.png`)
+
+## [1.1.3] - 2026-06-06
+
+### Fixed
+- **入货通知解析器双重 push 容器**:`removeChineseSpaces` 把"提单号:\n2*40HC\n" 合并成"提单号:2*40HC" 字符串,`extractCargoReceivingNoticeFields` (188-225 行) 和 `extractContainers` (425-444 行) 都识别"2*40HC"并 push,导致 `2*40HC` 生成 4 个 40HC 容器
+- **修复**:原 188-225 行只抽 BL 号,容器统一交给 `extractContainers` 处理(单一数据源)
+
+### Tested
+- **四张入货通知图端到端回归**(PaddleOCR 3.6.0 + 修复后 BookingRecognizer):
+  - 第一张:`ZHONGGUYIN CHUAN-25028W-FQDON00309-1-40HC` ✅(空格分隔)
+  - 第二张:`NORTHERN MATESTIC-25027W-FQDAB00206-2-40HC` ✅(斜杠标签 + ×箱量)
+  - 第三张:`ZHONGGUCHENGDU-25047W-FQDON00489-2-40HC` ✅(船名航次连写 + 同行*号)
+  - 第四张:`RACINE-26007W-FQDON00524-1-40HC` ✅(1X40HC 大写 X 兼容)
+
+## [1.1.2] - 2026-06-06
+
+### Fixed
+- **`extractContainers` 箱型×箱量正则顺序写反**:`40HC×2`(箱型在前)未匹配,改成两个分支分别匹配 `箱型×数量` / `数量×箱型` 两种顺序
+- **POL/POD 正则回溯陷阱**:`(.+?)` 非贪婪配合 `装\s*货\s*港` 边界导致 lookahead 失败,改成精确字符类 `[A-Z][A-Z\s,]+?` + 显式空白边界
+
+### Added
+- **入货通知第二种变体支持**(中文短标签体系):
+  - 装货港 / 起运港 / 卸货港 / 交货地 / 目的港 中文标签
+  - `船名/航次:船名/航次` 斜杠标签格式(`NORTHERN MATESTIC/25027W`)
+  - `40HC×2` 箱型在前 + 数量在后的格式
+  - `毛重（KGS）:34806` 中英混合格式
+  - `件数:1040PACKAGES` 件数提取
+- **第二张入货通知图实测**:PaddleOCR 32 行 0.83~1.00 置信度,`extractContainers` 现能正确展开 `40HC×2` 为两个 40HC 容器
+
+## [1.1.1] - 2026-06-06
+
+### Fixed
+- **入货通知正则支持中文全角冒号 `：`**:`index.js` 19 处 `[:\s]` 字符类扩展为 `[：:\s]`,中文场景 OCR 输出的"船名航次:船名 航次"等格式不再因全角冒号漏抽(实测 PaddleOCR 输出 `船名航次：ZHONGGUYIN CHUAN 25028W` 现能正确抽 `vessel: ZHONGGUYIN CHUAN` / `voyage: 25028W`)
+
+### Added
+- 本地 PaddleOCR 3.x 端到端验证脚本:`test-paddle-local.py`(Windows Python 3.13 + paddlepaddle 3.3.1 + paddleocr 3.6.0 + ModelScope 源,关闭 MKLDNN 绕过 PaddleX 算子 bug)
+
+## [1.1.0] - 2026-06-06
+
+### Added
+- **图片 OCR 识别能力**: 新增 `POST /parse-image` 端点,直接接收 PNG/JPG/JPEG 图片(URL / `file://` / Base64 三种方式)
+- **PaddleOCR 微服务**: 新增 `paddle-service/` 目录,基于 FastAPI + PP-OCRv4,提供 `/ocr` HTTP 接口
+- **Node 端 PaddleOCR 客户端**: 新增 `paddle-client.js`,内置信号量限流(默认并发 4)
+- **自动降级链路**: PaddleOCR 不可用时自动降级到 tesseract.js(ECONNREFUSED / ENOTFOUND / EAI_AGAIN / 超时 / success=false 五种失败场景)
+- **图片魔数校验**: 新增 `isValidImage()` 工具函数(校验 PNG `\x89PNG\r\n\x1a\n` 和 JPEG `\xFF\xD8\xFF` 魔数)
+- **CLI 图片支持**: `node cli.js image.png` 直接走 PaddleOCR + tesseract 降级
+- **图像预处理接入**: `image-preprocessor.js` 接入图片识别流程(去噪/二值化/直方图均衡化),`@napi-rs/canvas` 解码后送 PaddleOCR
+- **端到端测试**: 新增 `test-paddle.js`,对比 PaddleOCR 与 tesseract.js 在同一张测试图上的识别效果
+- **Python 单元测试**: `paddle-service/tests/test_ocr.py` 覆盖 health/ready/single OCR/格式校验/并发等
+- **环境变量**: 新增 `PADDLE_OCR_URL` / `PADDLE_TIMEOUT_MS` / `PADDLE_ENABLED` / `PADDLE_MAX_CONCURRENCY` / `OCR_ENGINE_DISABLED` 五个开关
+
+### Changed
+- `docker-compose.yml` 新增 `paddleocr` 服务(Python FastAPI 容器,`expose: 8866` 不映射到主机),`booking-recognizer` 通过 `depends_on: service_healthy` 等待 PaddleOCR 就绪
+- 新增 `paddle-models` named volume 持久化 PaddleOCR 模型,避免重启重下
+- 启动横幅和首页 `endpoints` 字段增加 `/parse-image`
+
+### Security
+- 图片端点复用现有 SSRF 防护(`isValidUrl`)、路径穿越防护(`..` / `%00`)、Base64 字符串 70MB 预检、文件 50MB 上限
+- 错误响应保持统一 `{ success, error, message }` 格式,生产环境隐藏详细错误
+
 ## [1.0.1] - 2026-05-22
 
 ### Security

@@ -1,0 +1,21 @@
+{
+  "documentType": "CARGO_RECEIVING_NOTICE",
+  "blNo": "FQDON00489",
+  "vessel": "ZHONGGUCHENGDU",
+  "voyage": "25047W",
+  "portOfLoading": null,
+  "portOfDischarge": "BANDAR ABBAS",
+  "containers": [
+    {
+      "containerNo": null,
+      "sizeType": "40HC"
+    },
+    {
+      "containerNo": null,
+      "sizeType": "40HC"
+    }
+  ],
+  "grossWeight": null,
+  "etd": null,
+  "standardFormat": "ZHONGGUCHENGDU-25047W-FQDON00489-2-40HC"
+}
