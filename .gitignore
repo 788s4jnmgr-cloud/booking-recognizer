@@ -38,3 +38,6 @@ downloads/
 # 一次性调试脚本(本地用,不入库)
 compare-once.js
 
+# npm pack 产物(构建输出,不入库)
+*.tgz
+
