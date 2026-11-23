@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0] - 2026-11-10
+
+### Added
+- **自动放箱端点**:新增 `POST /parse-document`(PDF/DOCX 统一识别,扩展名+魔数双判定)与 `POST /match`(识别结果 × 候选申请逐条结构化比对),均挂 `authMiddleware + rateLimitMiddleware`,不改动既有 `/parse`、`/compare` 等端点的对外行为
+- **`BookingRecognizer.normalizeBlNo`**:提单号归一化(全角转半角、去空白、去各类连字符、转大写),供 `/match` 与 `compareWithExpected` 使用;规则权威只在 Node 一侧
+- **`BookingRecognizer.compareWithExpected`**:结构化比对,箱量按**逐类型份数**判定(申请侧该类型份数 <= 识别侧该类型份数),申请侧箱型同步归一化(`45GP→40HC`),提单号归一化后精确相等为硬门槛
+- **`RATE_LIMIT_MAX` 改为环境变量可配**(默认 100),便于独立容器部署时按实际并发调整
+- `API.md` 补两个新端点、与 `/compare` 的口径差异、部署 B 相关配置说明
+
+### 验证
+- 本机 22 条断言全通过:归一化、D5 混箱多行全部命中、D8 逐类型份数、D9 提单号归一化、D10 申请侧归一化、`fuzzyCompare` 行为不变;真实 Hapag-Lloyd 订舱确认 PDF 端到端识别 `HLCUTA12605EOHA7 / MUNKEBO MAERSK / 624W / 3-[2x40HC+1x20GP]`;`/parse-document` 与 `/match` HTTP 端到端通过
+
 ## [1.1.6] - 2026-06-09
 
 ### Added

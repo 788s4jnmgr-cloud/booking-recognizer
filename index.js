@@ -957,6 +957,104 @@ class BookingRecognizer {
   }
 
   /**
+   * 提单号归一化：全角转半角 → 去所有空白 → 去各类连字符 → 转大写。
+   * 规则权威只在 Node 一侧；Java 侧仅用等价 SQL 表达式做粗筛，最终判定以此为准。
+   */
+  normalizeBlNo(value) {
+    if (value == null) return '';
+    let s = String(value);
+    s = s.replace(/[\uFF01-\uFF5E]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+    s = s.replace(/[\s\u3000\u00A0]+/g, '');
+    s = s.replace(/[-\u2010-\u2015\uFF0D\u2212]+/g, '');
+    return s.toUpperCase();
+  }
+
+  /**
+   * 结构化比对（/match 专用，D8 逐类型份数口径）。
+   * 与 fuzzyCompare 的差异：申请侧一行只有一个尺寸+箱型，按「该类型份数」比对，
+   * 而不是拿识别到的全部箱型总数去 >= 申请数。fuzzyCompare 保持原语义不变。
+   * @param {Object} result - parse() 输出的识别结果
+   * @param {Object} expected - { vessel, voyage, blNo, containerCount, containerSize, containerType }
+   * @param {number} threshold - 船名/航次加权相似度阈值，默认 0.7
+   */
+  compareWithExpected(result, expected, threshold = 0.7) {
+    const details = { exactMatchFields: {} };
+    const exact = details.exactMatchFields;
+
+    // 1) 提单号：两侧同规则归一化后精确相等（硬门槛）
+    const expectedBlNo = this.normalizeBlNo(expected.blNo);
+    const actualBlNo = this.normalizeBlNo(result.blNo);
+    exact.blNo = {
+      expected: expectedBlNo,
+      actual: actualBlNo,
+      matched: !!expectedBlNo && expectedBlNo === actualBlNo
+    };
+
+    // 2) 申请侧箱型拼装并归一化（45GP -> 40HC），识别侧结果已是归一化值
+    const expectedSizeType = this.normalizeSizeType(
+      String(expected.containerSize || '') + String(expected.containerType || '')
+    );
+    const expectedCount = Number(expected.containerCount) || 0;
+
+    // 3) 识别侧按类型统计份数
+    const actualByType = {};
+    for (const c of (result.containers || [])) {
+      const t = this.normalizeSizeType(String(c.sizeType || ''));
+      if (!t) continue;
+      actualByType[t] = (actualByType[t] || 0) + 1;
+    }
+    const actualCount = actualByType[expectedSizeType] || 0;
+    const typesMatched = expectedCount > 0 && actualCount >= expectedCount;
+    exact.containerTypes = {
+      expected: [{ sizeType: expectedSizeType, count: expectedCount }],
+      actual: Object.keys(actualByType).map(t => ({ sizeType: t, count: actualByType[t] })),
+      missing: typesMatched ? [] : [{ sizeType: expectedSizeType, required: expectedCount, actual: actualCount }]
+    };
+
+    // 4) 船名/航次模糊比对（权重与 fuzzyCompare 完全一致：各 0.5）
+    let totalWeight = 0;
+    let weightedSum = 0;
+    if (expected.vessel) {
+      details.vesselSimilarity = result.vessel ? this.calculateSimilarity(result.vessel, expected.vessel) : 0;
+      weightedSum += details.vesselSimilarity * 0.5;
+      totalWeight += 0.5;
+    } else {
+      details.vesselSimilarity = null;
+    }
+    if (expected.voyage) {
+      details.voyageSimilarity = result.voyage ? this.calculateSimilarity(result.voyage, expected.voyage) : 0;
+      weightedSum += details.voyageSimilarity * 0.5;
+      totalWeight += 0.5;
+    } else {
+      details.voyageSimilarity = null;
+    }
+    let vv = null;
+    if (details.vesselSimilarity !== null && details.voyageSimilarity !== null) {
+      vv = (details.vesselSimilarity + details.voyageSimilarity) / 2;
+    } else if (details.vesselSimilarity !== null) {
+      vv = details.vesselSimilarity;
+    } else if (details.voyageSimilarity !== null) {
+      vv = details.voyageSimilarity;
+    }
+    details.vesselVoyageSimilarity = vv;
+    const overallSimilarity = totalWeight > 0 ? weightedSum / totalWeight : 0;
+
+    const matched = exact.blNo.matched && typesMatched && overallSimilarity >= threshold;
+    let reason = null;
+    if (!exact.blNo.matched) reason = '提单号不一致';
+    else if (!typesMatched) reason = '箱型份数不足';
+    else if (overallSimilarity < threshold) reason = '船名航次相似度不足';
+
+    return {
+      matched,
+      similarity: Math.round(overallSimilarity * 100) / 100,
+      threshold,
+      reason,
+      details
+    };
+  }
+
+  /**
    * 解析组合格式字符串
    * 格式: 船名-航次-提单号-箱量-箱型+文档
    * 文档: PDF URL 或 base64 编码

@@ -647,3 +647,65 @@ pkill -f "node api.js" && node api.js
 
 > 混箱型用方括号 `[...]` 包裹多箱型摘要,`+` 分隔各箱型;`parseStandardFormat` 同时支持反向解析(混箱型时返回 `containerTypes` 数组)。
 > 箱型归一化规则:`22GP→20GP`、`45GP→40HC`、`40HQ→40HC`,详情见 [tests/fixtures/README.md](./tests/fixtures/README.md)。
+
+---
+
+## 自动放箱端点（v1.2.0 新增）
+
+这两个端点服务于「支线港放箱管理」的自动放箱：Java 港口端先调 `/parse-document` 识别订舱单,再按识别出的提单号查候选,最后调 `/match` 逐条比对。**比对规则唯一来源在 Node 侧**,Java 侧只透传字段。
+
+### `POST /parse-document`
+
+统一识别 PDF / DOCX 订舱单。扩展名与魔数**双判定**(PDF=`%PDF`,DOCX=zip `PK`),legacy `.doc`(OLE2)、图片均被拒绝。失败统一 HTTP 200 + `{success:false,error}`(与既有端点一致)。
+
+```bash
+curl -X POST http://localhost:3000/parse-document \
+  -H "Content-Type: application/json" -H "X-API-Key: your-secret-key" \
+  -d '{"base64":"<文件 base64>","fileName":"booking.pdf"}'
+```
+
+也支持 `{"url":"https://..."}`(走既有 `downloadPDF`,含 SSRF 校验;该分支固定按 PDF 处理)。
+
+响应 `data` 与 `parse()` 一致,含 `blNo / vessel / voyage / containers[] / standardFormat`。
+
+> 文本层为空的扫描版 PDF 会由 `pdf-parser.js` 自动降级 tesseract.js,准确率低于原生文本层;提单号精确相等是硬门槛,识别不准只会转为「未命中」,不会误放行。
+
+### `POST /match`
+
+```json
+{
+  "recognized": {
+    "vessel": "MUNKEBO MAERSK", "voyage": "624W",
+    "blNo": "HLCUTA12605EOHA7",
+    "containers": [{"sizeType":"40HC"},{"sizeType":"40HC"},{"sizeType":"20GP"}]
+  },
+  "candidates": [
+    {"id":123,"vessel":"MUNKEBO MAERSK","voyage":"624W","blNo":"HLCUTA12605EOHA7","containerCount":2,"containerSize":"40","containerType":"HC"}
+  ],
+  "threshold": 0.7
+}
+```
+
+申请侧箱型由 Node 侧拼装 `containerSize+containerType` 并归一化(如 `45GP→40HC`),Java 侧不拼字符串。响应:
+
+```json
+{
+  "success": true,
+  "data": {
+    "matchedIds": [123],
+    "matches": [{"id":123,"matched":true,"similarity":1,"threshold":0.7,"reason":null,"details":{}}]
+  }
+}
+```
+
+每个候选(含未命中的)都会出现在 `matches` 里,`reason` 为可读短句:`提单号不一致` / `箱型份数不足` / `船名航次相似度不足`。
+
+**与 `/compare` 的口径差异(重要)**:`/compare` 是历史契约,比较「一整份单据 vs 一个标准格式字符串」,箱量口径为 `识别总箱数 >= 申请总箱数`,行为**保持不变**;`/match` 比较「一整份单据 vs 多条按尺寸箱型分行的申请」,箱量口径为**逐类型份数**(申请侧该类型份数 <= 识别侧该类型份数)。两者不可混用。
+
+### 部署 B 相关配置
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `API_KEY` | 空 | 未配置时 `authMiddleware` 整段跳过;**生产必须配置** |
+| `RATE_LIMIT_MAX` | 100 | 每 IP 每 15 分钟请求上限;Java 服务端共用一个来源 IP,一次自动放箱触发 2 次调用,生产需调大 |
+| `PORT` | 3000 | 监听端口,`/health` 供容器探活 |

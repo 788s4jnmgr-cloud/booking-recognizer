@@ -169,7 +169,7 @@ function authMiddleware(req, res, next) {
 
 const rateLimitMap = new Map();
 const RATE_LIMIT_WINDOW = 15 * 60 * 1000; // 15分钟
-const RATE_LIMIT_MAX = 100; // 最多100次
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '100', 10); // 最多100次/15分钟（部署 B 可用环境变量调大）
 const RATE_LIMIT_MAP_MAX = 10000; // Map 条目上限，防止 DDoS 导致内存泄漏
 
 function rateLimitMiddleware(req, res, next) {
@@ -509,6 +509,132 @@ function safeUnlink(filePath) {
 // ============================================
 
 // 健康检查（无需认证）
+// ============================================
+// 自动放箱：统一文档识别 + 结构化比对（本期新增，不改动既有端点）
+// ============================================
+
+/**
+ * POST /parse-document —— 统一识别 PDF / DOCX 订舱单。
+ * body: { base64, fileName } 或 { url }；扩展名 + 魔数双判定，legacy .doc(OLE2) 被拒。
+ */
+app.post('/parse-document', authMiddleware, rateLimitMiddleware, async (req, res) => {
+  let filePath = null;
+  try {
+    const { base64, fileName, url } = req.body;
+    if (!base64 && !url) {
+      return res.status(200).json({ success: false, error: '请提供 base64 或 url' });
+    }
+
+    let buffer;
+    let sourceName = fileName || 'booking.pdf';
+
+    if (base64) {
+      if (base64.length > 70 * 1024 * 1024) {
+        return res.status(200).json({ success: false, error: '请求数据过大' });
+      }
+      try {
+        buffer = Buffer.from(base64, 'base64');
+      } catch {
+        return res.status(200).json({ success: false, error: '无效的 Base64 编码' });
+      }
+    } else {
+      const validation = isValidUrl(url);
+      if (!validation.valid) {
+        return res.status(200).json({ success: false, error: validation.reason });
+      }
+      filePath = await downloadPDF(url);
+      buffer = fs.readFileSync(filePath);
+      sourceName = path.basename(filePath);
+    }
+
+    const ext = path.extname(sourceName).toLowerCase();
+    if (ext !== '.pdf' && ext !== '.docx') {
+      if (filePath) safeUnlink(filePath);
+      return res.status(200).json({ success: false, error: '仅支持 PDF 或 DOCX 订舱单（不支持图片、legacy .doc）' });
+    }
+    if (ext === '.pdf' && !isValidPDF(buffer)) {
+      if (filePath) safeUnlink(filePath);
+      return res.status(200).json({ success: false, error: '无效的 PDF 文件' });
+    }
+    if (ext === '.docx' && buffer.slice(0, 2).toString('ascii') !== 'PK') {
+      if (filePath) safeUnlink(filePath);
+      return res.status(200).json({ success: false, error: '无效的 DOCX 文件' });
+    }
+    if (buffer.length > 50 * 1024 * 1024) {
+      if (filePath) safeUnlink(filePath);
+      return res.status(200).json({ success: false, error: '文件过大（最大 50MB）' });
+    }
+
+    if (!filePath) {
+      const safeName = `${Date.now()}_${Math.random().toString(36).substring(7)}${ext}`;
+      filePath = path.join(uploadsDir, safeName);
+      fs.writeFileSync(filePath, buffer);
+    }
+
+    const { extractTextFromPDF, extractTextFromWord } = require('./pdf-parser');
+    const text = ext === '.docx'
+      ? await extractTextFromWord(filePath)
+      : await extractTextFromPDF(filePath);
+
+    const recognizer = new BookingRecognizer();
+    const result = recognizer.parse(text);
+    result.standardFormat = recognizer.toStandardFormat(result);
+
+    if (filePath) safeUnlink(filePath);
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    if (filePath) safeUnlink(filePath);
+    console.error('parse-document 解析错误:', error);
+    return res.status(200).json({
+      success: false,
+      error: '解析失败',
+      message: process.env.NODE_ENV === 'production' ? '解析失败' : error.message
+    });
+  }
+});
+
+/**
+ * POST /match —— 识别结果 × 候选放箱申请，逐条结构化比对。
+ * 规则唯一来源在 Node 侧（compareWithExpected），Java 侧只透传字段。
+ * body: { recognized, candidates: [{ id, vessel, voyage, blNo, containerCount, containerSize, containerType }], threshold? }
+ */
+app.post('/match', authMiddleware, rateLimitMiddleware, (req, res) => {
+  try {
+    const { recognized, candidates, threshold } = req.body;
+    if (!recognized || typeof recognized !== 'object') {
+      return res.status(200).json({ success: false, error: '请提供 recognized' });
+    }
+    if (!Array.isArray(candidates)) {
+      return res.status(200).json({ success: false, error: 'candidates 必须是数组' });
+    }
+
+    const recognizer = new BookingRecognizer();
+    const t = typeof threshold === 'number' ? threshold : 0.7;
+    const matches = candidates.map(c => {
+      const r = recognizer.compareWithExpected(recognized, c, t);
+      return {
+        id: c.id,
+        matched: r.matched,
+        similarity: r.similarity,
+        threshold: r.threshold,
+        reason: r.reason,
+        details: r.details
+      };
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        matchedIds: matches.filter(m => m.matched).map(m => m.id),
+        matches
+      }
+    });
+  } catch (error) {
+    console.error('match 比对错误:', error);
+    return res.status(200).json({ success: false, error: '比对失败', message: error.message });
+  }
+});
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'booking-recognizer-api' });
 });
